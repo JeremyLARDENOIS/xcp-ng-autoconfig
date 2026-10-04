@@ -1,0 +1,16 @@
+.env
+.env.*
+.venv/
+__pycache__/
+*.pyc
+.terraform/
+*.tfstate*
+*.tfplan
+*.auto.tfvars*
+*.pkrvars.hcl
+*.sops.json
+*.age
+*.xva
+*.iso
+target/
+private/

@@ -1,0 +1,71 @@
+---
+- name: Create the private-net internal network
+  hosts: xcpng
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+
+  tasks:
+    - name: Find the existing network
+      ansible.builtin.raw: xe network-list name-label=private-net --minimal
+      register: existing_network
+      failed_when: existing_network.rc != 0 or ',' in existing_network.stdout
+      changed_when: false
+      check_mode: false
+
+    - name: Read the existing bridge name
+      ansible.builtin.raw: >-
+        xe network-param-get {{ ('uuid=' ~ (existing_network.stdout | trim)) | quote }} param-name=bridge
+      register: existing_bridge
+      changed_when: false
+      check_mode: false
+      when: existing_network.stdout | trim | length > 0
+
+    - name: Check the existing network for physical interfaces
+      ansible.builtin.raw: >-
+        xe pif-list {{ ('network-uuid=' ~ (existing_network.stdout | trim)) | quote }} --minimal
+      register: existing_pifs
+      failed_when: existing_pifs.rc != 0 or existing_pifs.stdout | trim | length > 0
+      changed_when: false
+      check_mode: false
+      when: existing_network.stdout | trim | length > 0
+
+    - name: Check attached VM interfaces before replacing the network
+      ansible.builtin.raw: >-
+        xe vif-list {{ ('network-uuid=' ~ (existing_network.stdout | trim)) | quote }} --minimal
+      register: existing_vifs
+      failed_when: existing_vifs.rc != 0 or existing_vifs.stdout | trim | length > 0
+      changed_when: false
+      check_mode: false
+      when:
+        - existing_network.stdout | trim | length > 0
+        - existing_bridge.stdout | trim != 'private-net'
+
+    - name: Delete the unused network with the old bridge name
+      ansible.builtin.raw: >-
+        xe network-destroy {{ ('uuid=' ~ (existing_network.stdout | trim)) | quote }}
+      changed_when: true
+      when:
+        - existing_network.stdout | trim | length > 0
+        - existing_bridge.stdout | trim != 'private-net'
+        - not ansible_check_mode
+
+    - name: Create the missing internal network
+      ansible.builtin.raw: >-
+        xe network-create name-label=private-net bridge=private-net name-description='Internal VM network'
+      changed_when: true
+      when:
+        - existing_network.stdout | trim | length == 0 or (existing_bridge.stdout | default('') | trim != 'private-net')
+        - not ansible_check_mode
+
+    - name: Read the network after creation
+      ansible.builtin.raw: xe network-list name-label=private-net --minimal
+      register: final_network
+      failed_when: final_network.rc != 0 or final_network.stdout | trim | length == 0 or ',' in final_network.stdout
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Display the network UUID
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} : private-net = {{ final_network.stdout | trim }}"
+      when: not ansible_check_mode

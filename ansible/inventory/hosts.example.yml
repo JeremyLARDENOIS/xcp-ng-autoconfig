@@ -1,0 +1,10 @@
+all:
+  children:
+    xcpng:
+      hosts:
+        host01:
+          ansible_host: host01.example.com
+        host02:
+          ansible_host: host02.example.com
+      vars:
+        ansible_user: root
