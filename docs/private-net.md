@@ -30,8 +30,8 @@ keys; keep secrets out of the inventory.
 Start with one inventory host:
 
 ```sh
-ansible-playbook -i private/hosts.yml ansible/private-net.yml --limit host01 --check
-ansible-playbook -i private/hosts.yml ansible/private-net.yml --limit host01
+ansible-playbook -i private/hosts.yml ansible/playbooks/setup.yml --limit host01 --check
+ansible-playbook -i private/hosts.yml ansible/playbooks/setup.yml --limit host01
 ```
 
 Check mode queries the host but creates no network. Record the printed UUID and
@@ -40,8 +40,8 @@ run the apply command again: no changes should be reported.
 Repeat for another inventory host after verifying the first result:
 
 ```sh
-ansible-playbook -i private/hosts.yml ansible/private-net.yml --limit host02
-ansible-playbook -i private/hosts.yml ansible/private-net.yml --limit host02
+ansible-playbook -i private/hosts.yml ansible/playbooks/setup.yml --limit host02
+ansible-playbook -i private/hosts.yml ansible/playbooks/setup.yml --limit host02
 ```
 
 The playbook reuses an existing network if its name is unique, its bridge is

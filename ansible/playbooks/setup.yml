@@ -1,0 +1,9 @@
+---
+- name: Set up XCP-ng hosts
+  hosts: xcpng
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: private_net
+      tags: [private_net]

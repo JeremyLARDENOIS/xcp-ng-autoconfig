@@ -44,8 +44,8 @@ keys before running Ansible.
 Start with one inventory host, such as `host01`:
 
 ```sh
-ansible-playbook -i private/hosts.yml ansible/private-net.yml --limit host01 --check
-ansible-playbook -i private/hosts.yml ansible/private-net.yml --limit host01
+ansible-playbook -i private/hosts.yml ansible/playbooks/setup.yml --limit host01 --check
+ansible-playbook -i private/hosts.yml ansible/playbooks/setup.yml --limit host01
 ```
 
 Check mode queries the host without creating a network. The next command creates
@@ -53,3 +53,13 @@ Check mode queries the host without creating a network. The next command creates
 be reported. Repeat for other inventory hosts after verifying the first result.
 
 See the [detailed procedure](docs/private-net.md) for verification and rollback.
+
+## Project layout
+
+- `ansible/playbooks/`: entry points; `setup.yml` runs the implemented setup steps.
+- `ansible/roles/`: implementation of each step; currently `private_net`.
+- `ansible/inventory/`: generic inventory examples.
+- `docs/`: user documentation.
+
+Run Ansible from the repository root so it loads `ansible.cfg` and finds the roles.
+To select only the network step, add `--tags private_net` to the setup command.
