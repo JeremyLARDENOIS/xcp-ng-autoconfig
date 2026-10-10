@@ -4,7 +4,9 @@ all:
       hosts:
         host01:
           ansible_host: host01.example.com
+          template_sr_uuid: REPLACE_WITH_LOCAL_STORAGE_UUID
         host02:
           ansible_host: host02.example.com
+          template_sr_uuid: REPLACE_WITH_LOCAL_STORAGE_UUID
       vars:
         ansible_user: root

@@ -6,4 +6,4 @@
   any_errors_fatal: true
   roles:
     - role: private_net
-      tags: [private_net]
+    - role: debian_template

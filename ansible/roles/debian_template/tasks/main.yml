@@ -1,0 +1,187 @@
+---
+- name: Validate the template storage parameter
+  ansible.builtin.assert:
+    that:
+      - template_sr_uuid | default('') is match('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
+    fail_msg: Set template_sr_uuid to the destination Local storage SR UUID in the private inventory.
+
+- name: Set fixed template identity and staging paths
+  ansible.builtin.set_fact:
+    template_name: debian-13-cloud-20250811-2201-raw-v1
+    template_work: "{{ playbook_dir }}/../../private/templates/debian-13-cloud-20250811-2201-raw-v1"
+    template_stage: "/var/run/sr-mount/{{ template_sr_uuid }}/.xcpng-autoconfig-template"
+
+- name: Check the destination SR and locate the template object
+  ansible.builtin.raw: |
+    set -eu
+    test "$(xe sr-param-get uuid={{ template_sr_uuid | quote }} param-name=type)" = ext
+    test "$(xe sr-param-get uuid={{ template_sr_uuid | quote }} param-name=content-type)" = user
+    mountpoint -q {{ ('/var/run/sr-mount/' ~ template_sr_uuid) | quote }}
+    vm=$(xe vm-list name-label={{ template_name | quote }} is-a-template=false is-control-domain=false --minimal)
+    template=$(xe template-list name-label={{ template_name | quote }} --minimal)
+    if [ -n "$vm" ] && [ -n "$template" ]; then
+      printf '%s,%s\n' "$vm" "$template"
+    else
+      printf '%s%s\n' "$vm" "$template"
+    fi
+  register: template_existing
+  failed_when: template_existing.rc != 0 or ',' in template_existing.stdout
+  changed_when: false
+  check_mode: false
+
+- name: Refuse unowned or running template objects
+  ansible.builtin.raw: |
+    set -eu
+    test "$(xe vm-param-get uuid={{ template_existing.stdout | trim | quote }} param-name=other-config param-key=xcpng-autoconfig-template)" = {{ template_name | quote }}
+    test "$(xe vm-param-get uuid={{ template_existing.stdout | trim | quote }} param-name=power-state)" = halted
+    test -z "$(xe vif-list vm-uuid={{ template_existing.stdout | trim | quote }} --minimal)"
+  when: template_existing.stdout | trim | length > 0
+  changed_when: false
+  check_mode: false
+
+- name: Download and import the generic template
+  when: not ansible_check_mode
+  block:
+    - name: Download the official RAW disk on the workstation
+      ansible.builtin.command:
+        argv:
+          - bash
+          - "{{ role_path }}/files/download-image.sh"
+          - "{{ template_work }}"
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      register: template_preparation
+      changed_when: "'CHANGED:' in template_preparation.stdout"
+
+    - name: Create the staging directory on the SR
+      ansible.builtin.raw: >-
+        umask 077 && mkdir -p {{ template_stage | quote }}
+      changed_when: false
+
+    - name: Transfer the disk and checksum over SSH
+      ansible.builtin.command:
+        argv:
+          - scp
+          - -P
+          - "{{ ansible_port | default(22) | string }}"
+          - "{{ template_work }}/debian-13-generic-amd64-20250811-2201.raw"
+          - "{{ template_work }}/template.sha256"
+          - "{{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }}:{{ template_stage }}/"
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      changed_when: false
+
+    - name: Create or reuse the halted template VM
+      ansible.builtin.raw: |
+        set -eu
+        cd {{ template_stage | quote }}
+        sha256sum --check template.sha256 >&2
+        vm=$(xe vm-list name-label={{ template_name | quote }} is-a-template=false is-control-domain=false --minimal)
+        template=$(xe template-list name-label={{ template_name | quote }} --minimal)
+        if [ -n "$vm" ] && [ -n "$template" ]; then
+          echo 'Multiple template objects' >&2; exit 1
+        fi
+        vm="$vm$template"
+        case "$vm" in *,*) echo 'Multiple template objects' >&2; exit 1;; esac
+        if [ -z "$vm" ]; then
+          size=$(xe sr-param-get uuid={{ template_sr_uuid | quote }} param-name=physical-size)
+          used=$(xe sr-param-get uuid={{ template_sr_uuid | quote }} param-name=physical-utilisation)
+          bytes=$(stat -c %s debian-13-generic-amd64-20250811-2201.raw)
+          test "$((size-used))" -ge "$((bytes+1073741824))"
+          vm=$(xe vm-create name-label={{ template_name | quote }} name-description='Generic Debian cloud template')
+          xe vm-param-set uuid="$vm" other-config:xcpng-autoconfig-template={{ template_name | quote }}
+          echo CHANGED >&2
+        fi
+        test "$(xe vm-param-get uuid="$vm" param-name=other-config param-key=xcpng-autoconfig-template)" = {{ template_name | quote }}
+        test "$(xe vm-param-get uuid="$vm" param-name=power-state)" = halted
+        printf '%s\n' "$vm"
+      register: template_vm
+      changed_when: "'CHANGED' in template_vm.stdout or 'CHANGED' in template_vm.stderr"
+      failed_when: >-
+        template_vm.rc != 0 or
+        (template_vm.stdout_lines | map('trim') | select('match', '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$') | list | length) != 1
+
+    - name: Read the template vm UUID from its output
+      ansible.builtin.set_fact:
+        template_vm_uuid: "{{ template_vm.stdout_lines | map('trim') | select('match', '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$') | first }}"
+
+    - name: Create or reuse the template disk
+      ansible.builtin.raw: |
+        set -eu
+        disk=$(xe vm-param-get uuid={{ template_vm_uuid | quote }} param-name=other-config param-key=root-vdi 2>/dev/null || true)
+        if [ -z "$disk" ]; then
+          disk=$(xe vdi-list sr-uuid={{ template_sr_uuid | quote }} name-label={{ (template_name ~ '-root') | quote }} --minimal)
+          case "$disk" in *,*) echo 'Multiple template disks' >&2; exit 1;; esac
+        fi
+        if [ -z "$disk" ]; then
+          bytes=$(stat -c %s {{ (template_stage ~ '/debian-13-generic-amd64-20250811-2201.raw') | quote }})
+          disk=$(xe vdi-create sr-uuid={{ template_sr_uuid | quote }} name-label={{ (template_name ~ '-root') | quote }} type=user virtual-size="$bytes")
+          xe vdi-param-set uuid="$disk" other-config:xcpng-autoconfig-template={{ template_name | quote }}
+          echo CHANGED >&2
+        fi
+        test "$(xe vdi-param-get uuid="$disk" param-name=other-config param-key=xcpng-autoconfig-template)" = {{ template_name | quote }}
+        test "$(xe vdi-param-get uuid="$disk" param-name=sr-uuid)" = {{ template_sr_uuid | quote }}
+        xe vm-param-set uuid={{ template_vm_uuid | quote }} other-config:root-vdi="$disk"
+        printf '%s\n' "$disk"
+      register: template_disk
+      changed_when: "'CHANGED' in template_disk.stdout or 'CHANGED' in template_disk.stderr"
+      failed_when: >-
+        template_disk.rc != 0 or
+        (template_disk.stdout_lines | map('trim') | select('match', '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$') | list | length) != 1
+
+    - name: Read the template disk UUID from its output
+      ansible.builtin.set_fact:
+        template_disk_uuid: "{{ template_disk.stdout_lines | map('trim') | select('match', '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$') | first }}"
+
+    - name: Import the disk once and resume interrupted imports
+      ansible.builtin.raw: |
+        set -eu
+        cd {{ template_stage | quote }}
+        wanted=$(awk '{print $1}' template.sha256)
+        imported=$(xe vdi-param-get uuid={{ template_disk_uuid | quote }} param-name=other-config param-key=import-sha256 2>/dev/null || true)
+        if [ -n "$imported" ] && [ "$imported" != "$wanted" ]; then
+          echo 'Template source changed; use a new template version instead of overwriting it' >&2
+          exit 1
+        fi
+        if [ -z "$imported" ]; then
+          test -z "$(xe vbd-list vdi-uuid={{ template_disk_uuid | quote }} --minimal)"
+          xe vdi-import uuid={{ template_disk_uuid | quote }} filename={{ (template_stage ~ '/debian-13-generic-amd64-20250811-2201.raw') | quote }} format=raw
+          xe vdi-param-set uuid={{ template_disk_uuid | quote }} other-config:import-sha256="$wanted"
+          echo CHANGED
+        fi
+      register: template_import
+      changed_when: "'CHANGED' in template_import.stdout"
+
+    - name: Attach the root disk without a network interface
+      ansible.builtin.raw: |
+        set -eu
+        vbd=$(xe vbd-list vm-uuid={{ template_vm_uuid | quote }} userdevice=0 --minimal)
+        case "$vbd" in *,*) echo 'Multiple root disk attachments' >&2; exit 1;; esac
+        if [ -z "$vbd" ]; then
+          xe vbd-create vm-uuid={{ template_vm_uuid | quote }} vdi-uuid={{ template_disk_uuid | quote }} device=0 type=Disk mode=RW bootable=true other-config:owner=true >/dev/null
+          echo CHANGED
+        else
+          test "$(xe vbd-param-get uuid="$vbd" param-name=vdi-uuid)" = {{ template_disk_uuid | quote }}
+        fi
+      register: template_attachment
+      changed_when: "'CHANGED' in template_attachment.stdout"
+
+    - name: Configure and convert the halted VM to a template
+      ansible.builtin.raw: |
+        set -eu
+        vm={{ template_vm_uuid | quote }}
+        test -z "$(xe vif-list vm-uuid="$vm" --minimal)"
+        if [ "$(xe vm-param-get uuid="$vm" param-name=is-a-template)" != true ]; then
+          xe vm-memory-limits-set uuid="$vm" static-min=1073741824 static-max=1073741824 dynamic-min=1073741824 dynamic-max=1073741824
+          xe vm-param-set uuid="$vm" VCPUs-max=1 VCPUs-at-startup=1 HVM-boot-policy='BIOS order' HVM-boot-params:order=c platform:firmware=uefi platform:secureboot=false platform:serial=pty
+          xe vm-param-set uuid="$vm" is-a-template=true other-config:debian-image-build=20250811-2201
+          echo CHANGED
+        fi
+      register: template_conversion
+      changed_when: "'CHANGED' in template_conversion.stdout"
+
+    - name: Display the template UUID and validation status
+      ansible.builtin.debug:
+        msg: "{{ template_name }}: {{ template_vm_uuid }}. Template imported; clone boot validation is still required."
