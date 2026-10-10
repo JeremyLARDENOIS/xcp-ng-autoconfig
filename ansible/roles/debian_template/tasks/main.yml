@@ -39,21 +39,23 @@
   changed_when: false
   check_mode: false
 
+- name: Download and verify the shared RAW image once
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ role_path }}/files/download-image.sh"
+      - "{{ template_work }}"
+  delegate_to: localhost
+  run_once: true
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  register: template_preparation
+  changed_when: "'CHANGED:' in template_preparation.stdout"
+  when: not ansible_check_mode
+
 - name: Download and import the generic template
   when: not ansible_check_mode
   block:
-    - name: Download the official RAW disk on the workstation
-      ansible.builtin.command:
-        argv:
-          - bash
-          - "{{ role_path }}/files/download-image.sh"
-          - "{{ template_work }}"
-      delegate_to: localhost
-      vars:
-        ansible_python_interpreter: "{{ ansible_playbook_python }}"
-      register: template_preparation
-      changed_when: "'CHANGED:' in template_preparation.stdout"
-
     - name: Create the staging directory on the SR
       ansible.builtin.raw: >-
         umask 077 && mkdir -p {{ template_stage | quote }}

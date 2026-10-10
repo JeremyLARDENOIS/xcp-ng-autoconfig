@@ -59,7 +59,7 @@ See the [setup procedure](docs/setup.md) for verification and rollback.
 ## Project layout
 
 - `ansible/playbooks/`: entry points; `setup.yml` runs the implemented setup steps.
-- `ansible/roles/`: implementation of each step; `private_net` and `debian_template`.
+- `ansible/roles/`: implementation of each step; `private_net`, `host_network` and `debian_template`.
 - `ansible/inventory/`: generic inventory examples.
 - `docs/`: user documentation.
 

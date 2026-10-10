@@ -1,7 +1,7 @@
 # Set up an XCP-ng host
 
 `ansible/playbooks/setup.yml` is the single entry point for the initial setup.
-It currently creates the `private-net` internal network, then imports an
+It creates the `private-net` internal network and imports an
 unmodified official Debian RAW image as a generic template. Host addressing,
 routing, router deployment and XOA deployment will be added incrementally.
 The setup also activates the private bridge and assigns the host private address.
@@ -248,3 +248,12 @@ the project chain with `iptables -F XCPNG-PRIVATE-FWD` and
 `iptables -X XCPNG-PRIVATE-FWD`. Restore IPv4 forwarding to its previous value
 (`0` on a fresh host) only if no other service needs it. Never flush built-in
 chains or save the entire live firewall as the project's configuration.
+
+## Execution order and concurrency
+
+The roles run sequentially: `private_net`, `host_network`, then `debian_template`.
+Hosts run in parallel within Ansible's fork limit. The linear strategy ensures
+that downloading and verifying the shared image runs once for all selected hosts.
+The template role owns preparation, transfer and import; each host imports its
+own template after successful preparation. Check mode does not download an image.
+Do not run multiple setup processes against the same pool or shared image cache.

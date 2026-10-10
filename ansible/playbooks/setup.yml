@@ -2,9 +2,9 @@
 - name: Set up XCP-ng hosts
   hosts: xcpng
   gather_facts: false
-  serial: 1
+  strategy: linear
   any_errors_fatal: true
   roles:
     - role: private_net
-    - role: debian_template
     - role: host_network
+    - role: debian_template
