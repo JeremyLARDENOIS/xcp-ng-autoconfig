@@ -1,0 +1,12 @@
+[Unit]
+Description=Private XCP-ng host address
+Requires=xapi.service
+After=xapi.service iptables.service ip6tables.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/xcpng-private-net {{ bootstrap_host_address }}
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,7 @@
 It currently creates the `private-net` internal network, then imports an
 unmodified official Debian RAW image as a generic template. Host addressing,
 routing, router deployment and XOA deployment will be added incrementally.
+The setup also activates the private bridge and assigns the host private address.
 
 ## Requirements
 
@@ -166,3 +167,84 @@ xe network-destroy uuid=NETWORK_UUID
 ```
 
 Do not delete a pre-existing network reused by the playbook.
+
+## Private host address
+
+Set `bootstrap_host_address` in each inventory host to its private `.254` address
+with a CIDR prefix. Use distinct private subnets for each site.
+
+The `host_network` role activates `private-net` through `xe network-attach`, then
+assigns the address without changing the public interface, default route or
+firewall. It refuses multiple-host pools, physical interfaces on this network,
+and conflicting private addresses. Check mode only validates and reads state.
+
+A oneshot service, `xcpng-private-net.service`, repeats this configuration after
+`xapi.service` at host boot. The script sets an explicit command search path
+and waits for XAPI to answer, with bounded retries. It does not continuously
+monitor the bridge.
+Recovery after the last VM stops or a toolstack restart remains to be tested;
+this boot service alone does not demonstrate that behavior.
+
+Run the setup twice and check for zero changes on the second run. Reboot one
+host manually, then check on the host before rerunning the setup:
+
+```sh
+systemctl status xcpng-private-net.service --no-pager
+journalctl -b -u xcpng-private-net.service --no-pager
+ip -4 -br address show private-net
+ip -4 route show dev private-net
+```
+
+A successful oneshot service can show as inactive after completion. Verify its
+exit status and the address itself. Bridge activation and private addressing at host boot have been validated.
+IPv4 forwarding and outbound NAT are configured for the router address `.1`
+only. Other VMs will use the router rather than bypassing it through Dom0.
+Guest connectivity remains to be tested.
+
+To undo only this step, disable the service and remove the configured address:
+
+```sh
+systemctl disable --now xcpng-private-net.service
+ip address del PRIVATE_HOST_CIDR dev private-net
+```
+
+Replace `PRIVATE_HOST_CIDR` with your configured address. The internal network
+and public host configuration are preserved.
+
+### Router Internet access
+
+The startup script enables IPv4 forwarding and detects the single default-route
+interface. It adds a project-owned `XCPNG-PRIVATE-FWD` chain, scoped jumps for
+traffic entering or leaving `private-net`, and a marked MASQUERADE rule for `.1`.
+Only outbound router traffic and its established or related responses are
+accepted. Other forwarded private traffic is dropped, including IPv6.
+No inbound port forwarding is added. INPUT and OUTPUT rules are preserved.
+
+The existing SSH access and host management exposure are unchanged. This step
+does not yet restrict public management services. Reboot persistence of the new
+forwarding rules and Internet connectivity from a guest still require validation.
+The script runs at boot after the firewall services; if another service reloads
+firewall rules later, rerun `systemctl restart xcpng-private-net.service`.
+
+After applying twice, verify zero changes on the second run. Reboot one host
+and inspect before running setup again:
+
+```sh
+sysctl net.ipv4.ip_forward
+iptables -S XCPNG-PRIVATE-FWD
+iptables -S FORWARD
+iptables -t nat -S POSTROUTING
+ip6tables -S FORWARD
+```
+
+Expect forwarding to be `1`, scoped jumps to the project chain and a single
+marked NAT rule. A guest test follows when deploying the router.
+
+Disabling the startup service alone does not remove live firewall rules. To undo
+this routing step, first disable the service, then remove the two FORWARD jumps,
+the marked NAT rule and the two marked IPv6 rules shown above by repeating their
+specifications with `-D` instead of `-A`. After removing the jumps, delete only
+the project chain with `iptables -F XCPNG-PRIVATE-FWD` and
+`iptables -X XCPNG-PRIVATE-FWD`. Restore IPv4 forwarding to its previous value
+(`0` on a fresh host) only if no other service needs it. Never flush built-in
+chains or save the entire live firewall as the project's configuration.

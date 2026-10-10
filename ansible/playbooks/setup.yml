@@ -7,3 +7,4 @@
   roles:
     - role: private_net
     - role: debian_template
+    - role: host_network
