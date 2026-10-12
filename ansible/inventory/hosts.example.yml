@@ -3,6 +3,7 @@ all:
     xcpng:
       hosts:
         host01:
+          xoa_address: 10.20.1.2/24
           ansible_host: host01.example.com
           bootstrap_host_address: 10.20.1.254/24
           router_address: 10.20.1.1/24

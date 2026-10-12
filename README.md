@@ -29,7 +29,8 @@ will configure services after deployment.
 The setup creates the `private-net` internal network and imports an unmodified
 official Debian RAW image as a generic template. It configures private host
 addressing and outbound NAT, then deploys a router VM and verifies its bootstrap
-access. It then configures IPv4 forwarding and guest NAT for the private /24 LAN.
+access. It then configures IPv4 forwarding and guest NAT for the private /24 LAN,
+and deploys official XOA on the host with `xoa_address` configured.
 
 ### Requirements
 
@@ -50,6 +51,10 @@ Replace the example `ansible_host` values with your addresses or SSH aliases.
 The `private/` directory is ignored by Git. Set `template_sr_uuid` to the destination
 Local storage SR UUID on each host. Verify SSH connectivity and host keys before
 running Ansible.
+
+Set `xoa_address` to an unused private address on the single host that will run
+XOA; omit it elsewhere. See the setup documentation for private UI access and
+initial account configuration.
 
 ### Run the setup
 

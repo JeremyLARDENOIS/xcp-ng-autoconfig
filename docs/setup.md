@@ -340,3 +340,48 @@ service with `sudo systemctl disable --now xcpng-router-firewall.service`, then
 remove only its table with `sudo nft delete table inet xcpng_router`. Restore
 redirect settings to their previous values if needed. The next setup reapplies
 the project configuration.
+
+## Deploy the official XOA appliance
+
+Set `xoa_address` only on the host that will run XOA, using an unused private
+/24 address such as `.2`. Omit it on other hosts. Setup runs the `xoa` role after
+guest routing configuration. It uses the existing template SR, keeps the official
+appliance resources and firmware, attaches its interface to `private-net`, and
+sets static networking through the documented `xenstore-data` parameters before
+boot. The gateway is the router `.1`, and DNS is the first external router resolver.
+See the [official deployment documentation](https://docs.xen-orchestra.com/xoa/).
+
+The official `https://xoa.io/xva` endpoint is mutable. The first downloaded image
+is retained in `private/xoa/`, and a local SHA-256 verifies cache and transfer
+integrity; it does not authenticate the image against a publisher signature.
+Staging uses the ext SR mount, not Dom0 system storage. Keep sufficient space on
+the workstation and SR for the downloaded XVA and imported disks. No appliance
+update or replacement occurs automatically.
+
+The VM is named `xoa-v1` and marked as project-owned. Setup rejects an existing
+unowned VM with that name. If interrupted between import and ownership marking,
+inspect the imported VM before retrying: this small window is not automatically
+recovered. Changes to configured addressing require the appliance to be halted.
+Imported staging files are retained for inspection. Auto power-on uses the pool
+flag already enabled by the router deployment.
+
+Setup checks private HTTPS availability from Dom0. That check accepts the
+appliance self-signed certificate and verifies availability only, not TLS
+identity or outbound routing. Open the UI using the displayed SSH tunnel:
+
+```sh
+ssh -N -L 8443:10.20.1.2:443 root@host01.example.com
+```
+
+Open `https://localhost:8443`. Verify the appliance certificate through a trusted
+path before entering credentials. The initial web account is `admin@admin.net`
+with password `admin`; create your own administrator and remove the default
+account immediately. Do not expose the tunnel listener or XOA publicly.
+Registration, updates, pool connections and account automation are deferred.
+
+To validate routing, use XOA's Updates view to check access to its update service
+and confirm that the router forwarding/NAT counters increase. A successful UI
+page load alone proves only private reachability. For shell-level DNS/HTTP
+checks, the appliance system account must first be enabled using the official
+procedure; setup does not inject a password or enable SSH login. Record actual
+results and check access again after a host reboot.

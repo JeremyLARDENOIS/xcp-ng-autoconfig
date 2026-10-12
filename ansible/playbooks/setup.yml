@@ -28,3 +28,11 @@
       ansible_port: 22
       ansible_python_interpreter: /usr/bin/python3
       ansible_ssh_common_args: "-o ProxyJump={{ router_bastion | quote }} -o StrictHostKeyChecking=accept-new"
+
+- name: Deploy XOA on its selected host
+  hosts: xcpng
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: xoa
+      when: xoa_address is defined

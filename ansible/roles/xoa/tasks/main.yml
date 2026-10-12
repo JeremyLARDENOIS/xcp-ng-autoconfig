@@ -1,0 +1,94 @@
+---
+- name: Validate XOA addressing
+  ansible.builtin.assert:
+    that:
+      - xoa_address is match('^10\.[0-9]+\.[0-9]+\.[0-9]+/24$')
+      - xoa_address.rsplit('.', 1)[0] == router_address.rsplit('.', 1)[0]
+      - xoa_address != router_address
+      - xoa_address != bootstrap_host_address
+    fail_msg: Set xoa_address to an unused address in the router private /24 subnet.
+
+- name: Locate the existing project appliance
+  ansible.builtin.raw: |
+    set -eu
+    vm=$(xe vm-list name-label=xoa-v1 is-a-template=false --minimal)
+    case "$vm" in *,*) echo 'Multiple XOA VMs' >&2; exit 1;; esac
+    if [ -n "$vm" ]; then
+      test "$(xe vm-param-get uuid="$vm" param-name=other-config param-key=xcpng-autoconfig-xoa)" = v1
+    fi
+    printf '%s\n' "$vm"
+  register: xoa_existing
+  changed_when: false
+  check_mode: false
+
+- name: Deploy the appliance
+  when: not ansible_check_mode
+  block:
+    - name: Download the official appliance to the workstation
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        mkdir -p private/xoa
+        cd private/xoa
+        if [ ! -f xoa.xva ]; then
+          curl --fail --location --proto '=https' --proto-redir '=https' https://xoa.io/xva -o xoa.xva.part
+          mv xoa.xva.part xoa.xva
+          sha256sum xoa.xva > xoa.sha256
+          echo CHANGED
+        fi
+        sha256sum --check xoa.sha256
+      args:
+        chdir: "{{ playbook_dir }}/../.."
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      register: xoa_download
+      changed_when: "'CHANGED' in xoa_download.stdout"
+      when: xoa_existing.stdout | trim | length == 0
+
+    - name: Prepare staging on the existing SR
+      ansible.builtin.raw: |
+        set -eu
+        test "$(xe sr-param-get uuid={{ template_sr_uuid | quote }} param-name=type)" = ext
+        mountpoint -q /var/run/sr-mount/{{ template_sr_uuid }}
+        umask 077
+        mkdir -p /var/run/sr-mount/{{ template_sr_uuid }}/.xcpng-autoconfig-xoa
+      changed_when: false
+      when: xoa_existing.stdout | trim | length == 0
+
+    - name: Transfer the appliance and transit checksum
+      ansible.builtin.command:
+        argv:
+          - scp
+          - -P
+          - "{{ ansible_port | default(22) | string }}"
+          - "{{ playbook_dir }}/../../private/xoa/xoa.xva"
+          - "{{ playbook_dir }}/../../private/xoa/xoa.sha256"
+          - "{{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }}:/var/run/sr-mount/{{ template_sr_uuid }}/.xcpng-autoconfig-xoa/"
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      changed_when: false
+      when: xoa_existing.stdout | trim | length == 0
+
+    - name: Import, configure and start the project appliance
+      ansible.builtin.raw: |
+        set -- {{ template_sr_uuid | quote }} {{ xoa_address.split('/')[0] | quote }} {{ router_address.split('/')[0] | quote }} {{ router_dns_servers[0] | quote }}
+        {{ lookup('file', role_path ~ '/files/deploy-xoa.sh') }}
+      register: xoa_deployment
+      changed_when: "'CHANGED' in xoa_deployment.stdout"
+
+    - name: Wait for private HTTPS from the host
+      ansible.builtin.raw: |
+        set -eu
+        attempt=0
+        until curl --silent --insecure --fail --connect-timeout 5 --max-time 10 https://{{ xoa_address.split('/')[0] }}/ -o /dev/null; do
+          attempt=$((attempt+1))
+          test "$attempt" -lt 30
+          sleep 5
+        done
+      changed_when: false
+
+    - name: Display the private access command
+      ansible.builtin.debug:
+        msg: "ssh -N -L 8443:{{ xoa_address.split('/')[0] }}:443 -p {{ ansible_port | default(22) }} {{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }} — open https://localhost:8443"
