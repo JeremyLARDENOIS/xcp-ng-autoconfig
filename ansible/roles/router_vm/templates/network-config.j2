@@ -1,0 +1,15 @@
+version: 2
+ethernets:
+  private:
+    match:
+      macaddress: {{ router_mac | to_json }}
+    set-name: eth0
+    dhcp4: false
+    dhcp6: false
+    accept-ra: false
+    addresses: [{{ router_address | to_json }}]
+    routes:
+      - to: 0.0.0.0/0
+        via: {{ bootstrap_host_address.split('/')[0] | to_json }}
+    nameservers:
+      addresses: {{ router_dns_servers | to_json }}

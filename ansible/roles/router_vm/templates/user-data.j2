@@ -1,0 +1,17 @@
+#cloud-config
+hostname: router
+manage_etc_hosts: true
+ssh_pwauth: false
+disable_root: true
+users:
+  - name: debian
+    groups: [sudo]
+    shell: /bin/bash
+    lock_passwd: true
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    ssh_authorized_keys:
+      - {{ router_public_key | to_json }}
+growpart:
+  mode: auto
+  devices: ['/']
+resize_rootfs: true

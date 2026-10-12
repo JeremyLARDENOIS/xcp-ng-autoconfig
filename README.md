@@ -11,20 +11,30 @@ Technologies:
 - Rust for substantial decision logic when needed.
 
 The [setup playbook documentation](docs/setup.md) covers the implemented steps:
-creating an internal network and importing a generic Debian template.
-Clone boot validation is pending. Keep real configuration, secrets and working
+creating an internal network, importing a generic Debian template and configuring
+a router VM. Keep real configuration, secrets and working
 notes outside version control.
+
+## Planned deployment change
+
+The current VM preparation from the official Debian cloud image is a temporary
+approach for validating the initial infrastructure. It should eventually be
+replaced by deploying from a prebuilt, versioned XCP-ng template with the common
+packages and guest tools already installed. That template may be built separately
+with Packer. Cloud-init will still supply instance-specific settings, and Ansible
+will configure services after deployment.
 
 ## Getting started
 
 The setup creates the `private-net` internal network and imports an unmodified
-official Debian RAW image as a generic template. Host IP addressing, routing
-and router deployment come later.
+official Debian RAW image as a generic template. It configures private host
+addressing and outbound NAT, then deploys a router VM and verifies its bootstrap
+access. It then configures IPv4 forwarding and guest NAT for the private /24 LAN.
 
 ### Requirements
 
 - XCP-ng 8.3 hosts accessible over SSH as `root`.
-- Ansible, `curl`, OpenSSH and checksum utilities installed on the workstation.
+- Ansible, `curl`, OpenSSH, `genisoimage` and checksum utilities installed on the workstation.
 - An SSH key available on that workstation; use an SSH agent for encrypted keys.
 
 Run the following commands from the repository root.
@@ -59,7 +69,7 @@ See the [setup procedure](docs/setup.md) for verification and rollback.
 ## Project layout
 
 - `ansible/playbooks/`: entry points; `setup.yml` runs the implemented setup steps.
-- `ansible/roles/`: implementation of each step; `private_net`, `host_network` and `debian_template`.
+- `ansible/roles/`: implementation of each setup step.
 - `ansible/inventory/`: generic inventory examples.
 - `docs/`: user documentation.
 

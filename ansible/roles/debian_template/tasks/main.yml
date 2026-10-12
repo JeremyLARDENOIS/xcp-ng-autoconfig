@@ -177,10 +177,30 @@
         test -z "$(xe vif-list vm-uuid="$vm" --minimal)"
         if [ "$(xe vm-param-get uuid="$vm" param-name=is-a-template)" != true ]; then
           xe vm-memory-limits-set uuid="$vm" static-min=1073741824 static-max=1073741824 dynamic-min=1073741824 dynamic-max=1073741824
-          xe vm-param-set uuid="$vm" VCPUs-max=1 VCPUs-at-startup=1 HVM-boot-policy='BIOS order' HVM-boot-params:order=c platform:firmware=uefi platform:secureboot=false platform:serial=pty
+          xe vm-param-set uuid="$vm" VCPUs-max=1 VCPUs-at-startup=1 HVM-boot-policy='BIOS order' HVM-boot-params:order=c platform:secureboot=false platform:serial=pty
           xe vm-param-set uuid="$vm" is-a-template=true other-config:debian-image-build=20250811-2201
           echo CHANGED
         fi
+        if [ "$(xe vm-param-get uuid="$vm" param-name=HVM-boot-params param-key=firmware 2>/dev/null || true)" != uefi ] ||
+           [ "$(xe vm-param-get uuid="$vm" param-name=platform param-key=device-model 2>/dev/null || true)" != qemu-upstream-uefi ]; then
+          test "$(xe vm-param-get uuid="$vm" param-name=power-state)" = halted
+          xe vm-param-set uuid="$vm" HVM-boot-params:firmware=uefi platform:device-model=qemu-upstream-uefi
+          echo CHANGED
+        fi
+        if xe vm-param-get uuid="$vm" param-name=platform param-key=firmware >/dev/null 2>&1; then
+          xe vm-param-remove uuid="$vm" param-name=platform param-key=firmware
+          echo CHANGED
+        fi
+        # Match the hardware defaults of the XCP-ng Debian UEFI template.
+        for setting in pae=true nx=true apic=true acpi=1 hpet=true viridian=false vga=std videoram=8 device_id=0001; do
+          key=${setting%%=*}
+          value=${setting#*=}
+          if [ "$(xe vm-param-get uuid="$vm" param-name=platform param-key="$key" 2>/dev/null || true)" != "$value" ]; then
+            test "$(xe vm-param-get uuid="$vm" param-name=power-state)" = halted
+            xe vm-param-set uuid="$vm" "platform:$key=$value"
+            echo CHANGED
+          fi
+        done
       register: template_conversion
       changed_when: "'CHANGED' in template_conversion.stdout"
 

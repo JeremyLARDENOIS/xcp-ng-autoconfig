@@ -1,0 +1,86 @@
+---
+- name: Validate the supported router subnet size
+  ansible.builtin.assert:
+    that: router_address.endswith('/24')
+    fail_msg: Guest routing currently supports /24 private networks.
+
+- name: Configure guest routing
+  become: true
+  when: not ansible_check_mode
+  block:
+    - name: Install nftables
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Write the project firewall
+      ansible.builtin.template:
+        src: router.nft.j2
+        dest: /etc/xcpng-router.nft
+        owner: root
+        group: root
+        mode: '0600'
+        validate: /usr/sbin/nft --check --file %s
+      register: router_firewall
+
+    - name: Install the firewall startup service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/xcpng-router-firewall.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Private router firewall
+          After=nftables.service
+          Before=network-pre.target
+          Wants=network-pre.target
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/sbin/nft --file /etc/xcpng-router.nft
+          ExecReload=/usr/sbin/nft --file /etc/xcpng-router.nft
+
+          [Install]
+          WantedBy=multi-user.target
+      register: router_firewall_service
+
+    - name: Enable and apply the firewall before forwarding
+      ansible.builtin.systemd_service:
+        name: xcpng-router-firewall.service
+        daemon_reload: "{{ router_firewall_service.changed }}"
+        enabled: true
+        state: "{{ 'restarted' if router_firewall.changed or router_firewall_service.changed else 'started' }}"
+
+    - name: Persist forwarding and disable ICMP redirects
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/90-xcpng-router.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          net.ipv4.ip_forward = 1
+          net.ipv4.conf.all.send_redirects = 0
+          net.ipv4.conf.default.send_redirects = 0
+          net.ipv4.conf.eth0.send_redirects = 0
+          net.ipv4.conf.all.accept_redirects = 0
+          net.ipv4.conf.default.accept_redirects = 0
+          net.ipv4.conf.eth0.accept_redirects = 0
+          net.ipv6.conf.all.forwarding = 0
+
+    - name: Apply routing settings if their live values differ
+      ansible.builtin.shell: |
+        set -eu
+        changed=false
+        while read -r key equals value; do
+          if [ "$(sysctl -n "$key")" != "$value" ]; then
+            sysctl -w "$key=$value" >/dev/null
+            changed=true
+          fi
+        done < /etc/sysctl.d/90-xcpng-router.conf
+        if "$changed"; then echo CHANGED; fi
+      register: router_sysctl
+      changed_when: "'CHANGED' in router_sysctl.stdout"

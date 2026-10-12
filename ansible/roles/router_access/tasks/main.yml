@@ -1,0 +1,20 @@
+---
+- name: Verify router bootstrap access
+  when: not ansible_check_mode
+  block:
+    - name: Wait for SSH through the host bastion
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        connect_timeout: 10
+
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Verify external DNS and HTTP connectivity
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "import urllib.request; print(urllib.request.urlopen('http://deb.debian.org/debian/', timeout=15).status)"
+      changed_when: false

@@ -1,0 +1,133 @@
+---
+- name: Validate router configuration
+  ansible.builtin.assert:
+    that:
+      - router_address | default('') == bootstrap_host_address | regex_replace('\.254/', '.1/')
+      - router_dns_servers | default([]) | length > 0
+      - router_ssh_public_key_file | default('') | length > 0
+    fail_msg: Set the router .1 address, external DNS servers and SSH public key path.
+
+- name: Read the public SSH key and remember the bastion
+  ansible.builtin.set_fact:
+    router_public_key: "{{ lookup('file', router_ssh_public_key_file) | trim }}"
+    router_bastion: "{{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }}:{{ ansible_port | default(22) }}"
+    router_work: "{{ playbook_dir }}/../../private/routers/{{ inventory_hostname }}"
+    router_stage: "/var/run/sr-mount/{{ template_sr_uuid }}/.xcpng-autoconfig-router"
+
+- name: Validate the public key format
+  ansible.builtin.assert:
+    that:
+      - router_public_key is match('^\S+ [A-Za-z0-9+/]+=*( .*)?$')
+    fail_msg: The selected file must contain a single OpenSSH public key.
+
+- name: Check the local ISO utility
+  ansible.builtin.command:
+    argv: [genisoimage, --version]
+  delegate_to: localhost
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  changed_when: false
+  check_mode: false
+
+- name: Locate and check the router VM without changing it
+  ansible.builtin.raw: |
+    set -eu
+    vm=$(xe vm-list name-label=router-v1 is-a-template=false is-control-domain=false --minimal)
+    case "$vm" in *,*) echo 'Multiple router VMs' >&2; exit 1;; esac
+    if [ -n "$vm" ]; then
+      test "$(xe vm-param-get uuid="$vm" param-name=other-config param-key=xcpng-autoconfig-router)" = v1
+    fi
+    template=$(xe template-list name-label=router-v1 --minimal)
+    case "$template" in *,*) echo 'Multiple router templates' >&2; exit 1;; esac
+    if [ -n "$template" ]; then
+      test -z "$vm"
+      test "$(xe vm-param-get uuid="$template" param-name=other-config param-key=xcpng-autoconfig-router)" = v1
+    fi
+  changed_when: false
+  check_mode: false
+
+- name: Deploy and start the router
+  when: not ansible_check_mode
+  block:
+    - name: Create or reuse the router root disk and interface
+      ansible.builtin.raw: |
+        set -- {{ template_sr_uuid | quote }} {{ template_vm_uuid | quote }}
+        {{ lookup('file', role_path ~ '/files/prepare-router.sh') }}
+      register: router_prepare
+      changed_when: "'CHANGED' in router_prepare.stdout"
+
+    - name: Read the router identifiers
+      ansible.builtin.set_fact:
+        router_uuid: "{{ (router_prepare.stdout_lines | select('match', '^VM_UUID=') | first).split('=')[1] | trim }}"
+        router_mac: "{{ (router_prepare.stdout_lines | select('match', '^VIF_MAC=') | first).split('=')[1] | trim }}"
+
+    - name: Create the private local seed directory
+      ansible.builtin.file:
+        path: "{{ router_work }}"
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    - name: Render the cloud-init seed
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "{{ router_work }}/{{ item }}"
+        mode: '0600'
+      loop: [user-data, meta-data, network-config]
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      register: router_seed_files
+
+    - name: Check the cached seed ISO
+      ansible.builtin.stat:
+        path: "{{ router_work }}/seed.iso"
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      register: router_seed_iso
+
+    - name: Generate the NoCloud ISO when its inputs change
+      ansible.builtin.command:
+        argv: [genisoimage, -quiet, -output, seed.iso, -volid, cidata, -joliet, -rock, user-data, meta-data, network-config]
+        chdir: "{{ router_work }}"
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      when: router_seed_files.changed or not router_seed_iso.stat.exists
+
+    - name: Record the seed checksum
+      ansible.builtin.shell: sha256sum seed.iso > seed.sha256
+      args:
+        chdir: "{{ router_work }}"
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      changed_when: false
+
+    - name: Create the remote seed directory
+      ansible.builtin.raw: "umask 077 && mkdir -p {{ router_stage | quote }}"
+      changed_when: false
+
+    - name: Transfer the seed over SSH
+      ansible.builtin.command:
+        argv:
+          - scp
+          - -P
+          - "{{ ansible_port | default(22) | string }}"
+          - "{{ router_work }}/seed.iso"
+          - "{{ router_work }}/seed.sha256"
+          - "{{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }}:{{ router_stage }}/"
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      changed_when: false
+
+    - name: Import and attach the seed before first boot
+      ansible.builtin.raw: |
+        set -- {{ router_uuid | quote }} {{ template_sr_uuid | quote }} {{ router_stage | quote }}
+        {{ lookup('file', role_path ~ '/files/start-router.sh') }}
+      register: router_start
+      changed_when: "'CHANGED' in router_start.stdout"

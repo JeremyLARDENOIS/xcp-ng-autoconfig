@@ -5,10 +5,14 @@ all:
         host01:
           ansible_host: host01.example.com
           bootstrap_host_address: 10.20.1.254/24
+          router_address: 10.20.1.1/24
           template_sr_uuid: REPLACE_WITH_LOCAL_STORAGE_UUID
         host02:
           ansible_host: host02.example.com
           bootstrap_host_address: 10.20.2.254/24
+          router_address: 10.20.2.1/24
           template_sr_uuid: REPLACE_WITH_LOCAL_STORAGE_UUID
       vars:
         ansible_user: root
+        router_ssh_public_key_file: ~/.ssh/id_ed25519.pub
+        router_dns_servers: [1.1.1.1, 9.9.9.9]

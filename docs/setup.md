@@ -10,7 +10,7 @@ The setup also activates the private bridge and assigns the host private address
 
 - XCP-ng 8.3 hosts accessible over SSH as `root`.
 - A mounted ext SR on each host.
-- Ansible, Bash, `curl`, OpenSSH, `sha512sum` and `sha256sum` on the workstation.
+- Ansible, Bash, `curl`, OpenSSH, `genisoimage`, `sha512sum` and `sha256sum` on the workstation.
 - Workstation Internet access and space to cache the RAW image.
 - SR space for both the staged image and imported disk, plus 1 GiB.
 
@@ -251,9 +251,92 @@ chains or save the entire live firewall as the project's configuration.
 
 ## Execution order and concurrency
 
-The roles run sequentially: `private_net`, `host_network`, then `debian_template`.
+The host roles run sequentially: `private_net`, `host_network`, `debian_template`,
+then `router_vm`. A second play runs `router_access` and `router_network` in the guests.
 Hosts run in parallel within Ansible's fork limit. The linear strategy ensures
 that downloading and verifying the shared image runs once for all selected hosts.
 The template role owns preparation, transfer and import; each host imports its
 own template after successful preparation. Check mode does not download an image.
 Do not run multiple setup processes against the same pool or shared image cache.
+
+## Deploy the router VM
+
+Install `genisoimage` on the workstation (for example, `sudo apt install genisoimage` on Debian or Ubuntu). It creates a small CIDATA ISO containing
+NoCloud user data, metadata and network configuration. The ISO is imported as a
+read-only seed disk on the existing ext SR; no ISO SR or image customization is
+required. See [cloud-init NoCloud documentation](https://cloudinit.readthedocs.io/en/26.1/reference/datasources/nocloud.html).
+
+Set `router_address` to `.1` in the host's subnet, `router_ssh_public_key_file`
+to your public key file and `router_dns_servers` to external DNS resolver
+addresses. The private key stays on your workstation. The router uses the same
+SR as the Debian template. Existing experimental VMs are preserved; the new
+project VM is named `router-v1`.
+
+The setup installs a VM from the generic template with `xe vm-install`, grows its root disk to 8 GiB, creates one
+private interface and attaches its seed before first boot. It inherits 1 vCPU,
+1 GiB RAM and UEFI firmware from the template. Cloud-init creates the `debian`
+SSH user with passwordless sudo, static `.1`, Dom0 `.254` as gateway, and external
+DNS. Root SSH and password authentication are disabled. Ansible then installs
+nftables and configures forwarding in the guest through the host bastion.
+
+Local seed files are stored in `private/routers/INVENTORY_HOST/`. Keep this cache:
+changing the seed after first boot is rejected rather than silently reconfiguring
+a guest. Unowned VMs named `router-v1` are rejected. Interrupted creation before
+an ownership marker may require manual review. The pool auto-power-on flag is
+also enabled; other VMs already marked for auto-power-on may therefore start on
+future host boots.
+
+Start on one host with the usual check and apply commands. The second play in
+the same setup checks guest SSH via the host as ProxyJump, waits for cloud-init,
+and verifies DNS plus an HTTP request to `deb.debian.org`. Limiting the setup by
+the original inventory host name also limits these guest checks. New guest SSH
+host keys are accepted on first contact; changed host keys are rejected.
+
+If bootstrap verification fails, the VM is retained for inspection through its
+console. Do not rerun creation with a new name to hide a failed boot. After success,
+repeat setup to verify idempotence. Guest routing, reboot connectivity and recovery
+when the last VIF stops remain to be validated during integration.
+
+If an earlier setup created a project-owned template named `router-v1` with
+`vm-copy`, it is renamed to `router-v1-failed-copy` and retained with its disks.
+The corrected setup creates a real VM from the original Debian template.
+Nothing is deleted during this recovery. Review and remove the retained failed
+copy separately after successful guest validation.
+
+## Configure guest routing
+
+The `router_network` role supports private /24 networks. Other VMs use `.1` as
+their gateway and external DNS resolvers until DNS services are deployed.
+The router keeps `.254` as its default gateway. Both traffic directions use
+`eth0`; guest masquerading makes Dom0 see the router's `.1` source address,
+matching its existing forwarding and NAT rules. Replies return through the
+router. This is double NAT; private client addresses are hidden from Dom0.
+
+The role manages only the `inet xcpng_router` nftables table and a dedicated
+startup service. It permits outbound IPv4 forwarding and established return
+traffic, drops other forwarded traffic, and leaves guest INPUT and OUTPUT
+unchanged. It disables IPv6 forwarding and ICMP redirects, which would otherwise
+allow clients to learn a direct route through `.254`. Same-subnet traffic travels
+directly between VMs and does not pass through this router firewall.
+
+Apply setup on one host, then rerun to check for zero changes. From the router:
+
+```sh
+sudo nft list table inet xcpng_router
+sysctl net.ipv4.ip_forward net.ipv4.conf.eth0.send_redirects
+systemctl status xcpng-router-firewall.service --no-pager
+```
+
+The existing router Internet check does not validate forwarding for another VM.
+Use a separate test VM on `private-net` with an unused static address (for example
+`10.20.1.10/24`), gateway `10.20.1.1`, and an external DNS resolver. Check an HTTP
+request to `http://deb.debian.org/debian/` from that guest and confirm that the
+router's forwarding and NAT counters increase. Repeat after a host reboot.
+Guest forwarding and reboot persistence remain unvalidated until those tests pass.
+
+To undo guest routing, set `net.ipv4.ip_forward=0` in the project's sysctl file
+and apply it with `sudo sysctl -p /etc/sysctl.d/90-xcpng-router.conf`. Disable the
+service with `sudo systemctl disable --now xcpng-router-firewall.service`, then
+remove only its table with `sudo nft delete table inet xcpng_router`. Restore
+redirect settings to their previous values if needed. The next setup reapplies
+the project configuration.

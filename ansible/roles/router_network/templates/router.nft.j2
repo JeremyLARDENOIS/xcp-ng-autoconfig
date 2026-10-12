@@ -1,0 +1,16 @@
+{% set subnet = router_address.rsplit('.', 1)[0] ~ '.0/' ~ router_address.split('/')[1] %}
+# Reload only the project table, preserving other firewall tables.
+add table inet xcpng_router
+flush table inet xcpng_router
+table inet xcpng_router {
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        ct state invalid counter drop
+        meta nfproto ipv4 ct state established,related counter accept
+        iifname "eth0" oifname "eth0" ip saddr {{ subnet }} ip daddr != {{ subnet }} ct state new counter accept
+    }
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname "eth0" ip saddr {{ subnet }} ip daddr != {{ subnet }} counter masquerade
+    }
+}
