@@ -1,0 +1,83 @@
+---
+- name: Require explicit IPv4 addresses and supported prefixes
+  ansible.builtin.assert:
+    that:
+      - admin_vpn.address is match('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/24$')
+      - admin_vpn.address | ansible.utils.ipv4 == admin_vpn.address
+      - admin_vpn.client_address is match('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/32$')
+      - admin_vpn.client_address | ansible.utils.ipv4 == admin_vpn.client_address
+      - router_address is match('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/24$')
+      - router_address | ansible.utils.ipv4 == router_address
+      - admin_vpn.endpoint is match('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+      - admin_vpn.endpoint | ansible.utils.ipv4 | ansible.utils.ipaddr('public') == admin_vpn.endpoint
+    fail_msg: Use private /24 networks, a device /32 and an explicit public IPv4 endpoint.
+
+- name: Derive the VPN destination networks
+  ansible.builtin.set_fact:
+    vpn_network:
+      lan: "{{ router_address | ansible.utils.ipaddr('network/prefix') }}"
+      network: "{{ admin_vpn.address | ansible.utils.ipaddr('network/prefix') }}"
+
+- name: Reject reserved addresses and overlapping VPN destinations
+  ansible.builtin.assert:
+    that:
+      - vpn_network.network | ansible.utils.network_in_usable(admin_vpn.address.split('/')[0])
+      - vpn_network.network | ansible.utils.network_in_usable(admin_vpn.client_address.split('/')[0])
+      - admin_vpn.address.split('/')[0] != admin_vpn.client_address.split('/')[0]
+      - not (vpn_network.lan | ansible.utils.network_in_network(vpn_network.network))
+      - not (vpn_network.network | ansible.utils.network_in_network(vpn_network.lan))
+      - not (vpn_network.lan | ansible.utils.network_in_network(admin_vpn.endpoint))
+      - not (vpn_network.network | ansible.utils.network_in_network(admin_vpn.endpoint))
+    fail_msg: Device and gateway must be distinct usable addresses; LAN, VPN and endpoint must not overlap.
+
+- name: Read existing IPv4 routes from all tables
+  ansible.builtin.command:
+    argv: [ip, -j, -4, route, show, table, all]
+  register: vpn_existing_routes
+  changed_when: false
+  check_mode: false
+
+- name: Reject routes conflicting with the VPN destinations
+  ansible.builtin.assert:
+    that:
+      - not (vpn_network.lan | ansible.utils.network_in_network(item.dst))
+      - not (item.dst | ansible.utils.network_in_network(vpn_network.lan))
+      - not (vpn_network.network | ansible.utils.network_in_network(item.dst))
+      - not (item.dst | ansible.utils.network_in_network(vpn_network.network))
+    fail_msg: "VPN destinations overlap an existing route: {{ item.dst }}."
+  loop: "{{ vpn_existing_routes.stdout | from_json }}"
+  loop_control:
+    label: "{{ item.dst | default('default') }}"
+  when:
+    - item.dst | default('default') != 'default'
+    - item.dev | default('') != vpn_profile
+
+- name: Read existing interfaces
+  ansible.builtin.command:
+    argv: [ip, -j, link, show]
+  register: vpn_existing_links
+  changed_when: false
+  check_mode: false
+
+- name: Verify ownership of an existing VPN interface
+  ansible.builtin.command:
+    argv: [nmcli, -g, GENERAL.CON-UUID, device, show, "{{ vpn_profile }}"]
+  register: vpn_interface_owner
+  changed_when: false
+  check_mode: false
+  failed_when: vpn_interface_owner.rc != 0 or vpn_interface_owner.stdout | trim != vpn_uuid
+  when: vpn_existing_links.stdout | from_json | selectattr('ifname', 'equalto', vpn_profile) | list | length > 0
+
+- name: Read existing NetworkManager profile identities
+  ansible.builtin.command:
+    argv: [nmcli, -t, -f, 'UUID,NAME', connection, show]
+  register: vpn_existing_profiles
+  changed_when: false
+  check_mode: false
+
+- name: Reject a profile name owned by another connection
+  ansible.builtin.assert:
+    that:
+      - item.split(':', 1)[1] != vpn_profile or item.split(':', 1)[0] == vpn_uuid
+    fail_msg: The reserved VPN profile name belongs to another connection.
+  loop: "{{ vpn_existing_profiles.stdout_lines }}"

@@ -3,6 +3,11 @@ all:
     xcpng:
       hosts:
         host01:
+          # Opt in only the first site while validating VPN access.
+          admin_vpn:
+            address: 10.91.1.1/24
+            endpoint: 203.0.113.10
+            client_address: 10.91.1.10/32
           xoa_address: 10.20.1.2/24
           ansible_host: host01.example.com
           bootstrap_host_address: 10.20.1.254/24

@@ -1,0 +1,90 @@
+---
+- name: Remember the existing public SSH bastion
+  ansible.builtin.set_fact:
+    router_bastion: "{{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }}:{{ ansible_port | default(22) }}"
+
+- name: Require the device public key before changing the infrastructure
+  ansible.builtin.assert:
+    that: "lookup('file', playbook_dir ~ '/../../private/wireguard/admin.pub') | trim is match('^[A-Za-z0-9+/]{43}=$')"
+    fail_msg: Prepare private/wireguard/admin.pub before running without workstation configuration.
+
+- name: Validate administration VPN addressing on the controller
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -c
+      - |
+        import ipaddress, sys
+        gateway = ipaddress.IPv4Interface(sys.argv[1])
+        client = ipaddress.IPv4Interface(sys.argv[2])
+        endpoint = ipaddress.IPv4Address(sys.argv[3])
+        lan = ipaddress.IPv4Interface(sys.argv[4]).network
+        assert endpoint.is_global, 'Endpoint must be a public IPv4 address'
+        assert endpoint not in lan and endpoint not in gateway.network
+        assert gateway.network.prefixlen == 24, 'VPN network must be /24'
+        assert client.network.prefixlen == 32, 'Device address must be /32'
+        assert client.ip in gateway.network and client.ip != gateway.ip
+        assert gateway.ip not in (gateway.network.network_address, gateway.network.broadcast_address)
+        assert client.ip not in (gateway.network.network_address, gateway.network.broadcast_address)
+        assert not gateway.network.overlaps(lan), 'VPN and site LAN overlap'
+        print(gateway.network)
+      - "{{ admin_vpn.address }}"
+      - "{{ admin_vpn.client_address }}"
+      - "{{ admin_vpn.endpoint }}"
+      - "{{ router_address }}"
+  delegate_to: localhost
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  register: admin_vpn_network_result
+  changed_when: false
+  check_mode: false
+
+- name: Install persistent administration VPN host routing
+  when: not ansible_check_mode
+  block:
+    - name: Install the administration VPN host files
+      ansible.builtin.raw: |
+        set -eu
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"' EXIT
+        cat > "$work/script" <<'ADMIN_VPN_SCRIPT'
+        {{ lookup('file', role_path ~ '/files/vpn-admin.sh') }}
+        ADMIN_VPN_SCRIPT
+        cat > "$work/service" <<'ADMIN_VPN_SERVICE'
+        [Unit]
+        Description=Administration VPN host routing
+        Requires=xcpng-private-net.service
+        After=xcpng-private-net.service
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/xcpng-admin-vpn {{ router_address.split('/')[0] }} {{ admin_vpn_network_result.stdout | trim }} {{ admin_vpn.endpoint }} {{ admin_vpn.client_address }} {{ bootstrap_host_address.split('/')[0] }} {{ admin_vpn.client_enabled | default(true) | bool | ternary('true', 'false') }}
+        [Install]
+        WantedBy=multi-user.target
+        ADMIN_VPN_SERVICE
+        if ! cmp -s "$work/script" /usr/local/sbin/xcpng-admin-vpn; then
+          install -m 0755 "$work/script" /usr/local/sbin/xcpng-admin-vpn
+          echo CHANGED
+        fi
+        if ! cmp -s "$work/service" /etc/systemd/system/xcpng-admin-vpn.service; then
+          install -m 0644 "$work/service" /etc/systemd/system/xcpng-admin-vpn.service
+          echo CHANGED
+        fi
+        systemctl daemon-reload
+        if ! systemctl is-enabled xcpng-admin-vpn.service >/dev/null 2>&1; then
+          systemctl enable xcpng-admin-vpn.service
+          echo CHANGED
+        fi
+      register: admin_vpn_host_install
+      changed_when: "'CHANGED' in admin_vpn_host_install.stdout"
+
+    - name: Apply administration VPN forwarding and return route
+      ansible.builtin.raw: >-
+        /usr/local/sbin/xcpng-admin-vpn
+        {{ router_address.split('/')[0] | quote }}
+        {{ admin_vpn_network_result.stdout | trim | quote }}
+        {{ admin_vpn.endpoint | quote }}
+        {{ admin_vpn.client_address | quote }}
+        {{ bootstrap_host_address.split('/')[0] | quote }}
+        {{ admin_vpn.client_enabled | default(true) | bool | ternary('true', 'false') }}
+      register: admin_vpn_host_apply
+      changed_when: "'CHANGED' in admin_vpn_host_apply.stdout"

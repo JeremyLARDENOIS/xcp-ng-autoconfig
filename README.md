@@ -71,6 +71,10 @@ be reported. Repeat for other inventory hosts after verifying the first result.
 
 See the [setup procedure](docs/setup.md) for verification and rollback.
 
+The separate [VPN playbook](docs/vpn.md) connects one Ubuntu NetworkManager
+workstation to the first site. It configures the VPN infrastructure and optionally
+the workstation; `setup.yml` remains the minimal infrastructure setup entry point.
+
 ## Project layout
 
 - `ansible/playbooks/`: entry points; `setup.yml` runs the implemented setup steps.

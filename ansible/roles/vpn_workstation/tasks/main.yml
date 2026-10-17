@@ -1,0 +1,72 @@
+---
+- name: Require the selected site's VPN contract
+  ansible.builtin.assert:
+    that:
+      - admin_vpn is defined
+      - admin_vpn.address is defined
+      - admin_vpn.client_address is defined
+      - admin_vpn.endpoint is defined
+      - router_address is defined
+
+- name: Check Ubuntu and active workstation services
+  ansible.builtin.shell: |
+    set -eu
+    . /etc/os-release
+    test "$ID" = ubuntu
+    systemctl is-active --quiet NetworkManager
+    command -v wg
+    command -v nmcli
+  changed_when: false
+  check_mode: false
+
+- name: Derive the stable NetworkManager profile identity
+  ansible.builtin.set_fact:
+    vpn_profile: "{{ 'xa-' ~ (inventory_hostname | hash('sha256'))[:10] }}"
+    vpn_uuid: "{{ ('xcpng-autoconfig/vpn-admin/' ~ inventory_hostname) | to_uuid(namespace='6ba7b811-9dad-11d1-80b4-00c04fd430c8') }}"
+
+- name: Validate VPN addressing and existing network connections
+  ansible.builtin.import_tasks: validate-network.yml
+
+- name: Validate the preserved local keys
+  ansible.builtin.assert:
+    that:
+      - "lookup('ansible.builtin.file', playbook_dir ~ '/../../private/wireguard/admin.key') | trim is match('^[A-Za-z0-9+/]{43}=$')"
+      - "lookup('ansible.builtin.file', playbook_dir ~ '/../../private/wireguard/sites/' ~ inventory_hostname ~ '.pub') | trim is match('^[A-Za-z0-9+/]{43}=$')"
+  no_log: true
+
+- name: Write the site's protected NetworkManager profile
+  ansible.builtin.template:
+    src: profile.nmconnection.j2
+    dest: "/etc/NetworkManager/system-connections/{{ vpn_profile }}.nmconnection"
+    owner: root
+    group: root
+    mode: '0600'
+  become: true
+  no_log: true
+  register: vpn_configuration
+
+- name: Load the selected profile
+  ansible.builtin.command:
+    argv:
+      - nmcli
+      - connection
+      - load
+      - "/etc/NetworkManager/system-connections/{{ vpn_profile }}.nmconnection"
+  become: true
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Read active profiles
+  ansible.builtin.command:
+    argv: [nmcli, -t, -f, UUID, connection, show, --active]
+  register: vpn_active
+  changed_when: false
+  check_mode: false
+
+- name: Activate the selected profile when needed
+  ansible.builtin.command:
+    argv: [nmcli, connection, up, uuid, "{{ vpn_uuid }}"]
+  become: true
+  when:
+    - not ansible_check_mode
+    - vpn_configuration.changed or vpn_uuid not in vpn_active.stdout_lines

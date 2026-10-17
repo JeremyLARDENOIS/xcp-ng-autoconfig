@@ -6,11 +6,23 @@ table inet xcpng_router {
     chain forward {
         type filter hook forward priority filter; policy drop;
         ct state invalid counter drop
+{% if admin_vpn is defined %}
+{% if admin_vpn.client_enabled | default(true) | bool %}
+        iifname "wg-admin" oifname "eth0" ip saddr {{ admin_vpn.client_address }} ip daddr {{ subnet }} counter accept
+        iifname "eth0" oifname "wg-admin" ip saddr {{ subnet }} ip daddr {{ admin_vpn.client_address }} ct state established,related counter accept
+{% endif %}
+        # Administration forwarding never falls through to generic state rules.
+        iifname "wg-admin" counter drop
+        oifname "wg-admin" counter drop
+{% endif %}
         meta nfproto ipv4 ct state established,related counter accept
         iifname "eth0" oifname "eth0" ip saddr {{ subnet }} ip daddr != {{ subnet }} ct state new counter accept
     }
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
+{% if admin_vpn is defined %}
+        ip daddr {{ admin_vpn.address.rsplit('.', 1)[0] ~ '.0/24' }} counter return
+{% endif %}
         oifname "eth0" ip saddr {{ subnet }} ip daddr != {{ subnet }} counter masquerade
     }
 }

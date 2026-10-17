@@ -1,0 +1,13 @@
+# Own only this table; preserve the existing routing firewall and bastion access.
+add table inet xcpng_admin
+flush table inet xcpng_admin
+table inet xcpng_admin {
+    chain input {
+        type filter hook input priority filter; policy accept;
+{% if admin_vpn.client_enabled | default(true) | bool %}
+        iifname "wg-admin" ip saddr {{ admin_vpn.client_address }} ip protocol icmp counter accept
+        iifname "wg-admin" ip saddr {{ admin_vpn.client_address }} tcp dport 22 counter accept
+{% endif %}
+        iifname "wg-admin" counter drop
+    }
+}

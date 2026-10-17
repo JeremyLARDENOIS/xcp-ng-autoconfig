@@ -1,0 +1,63 @@
+---
+- name: Install WireGuard tooling on the workstation
+  ansible.builtin.apt:
+    name: wireguard-tools
+    state: present
+  become: true
+
+- name: Protect the local WireGuard directory
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/../../private/wireguard"
+    state: directory
+    mode: '0700'
+
+- name: Prepare the preserved device keys
+  when: not ansible_check_mode
+  block:
+    - name: Inspect the existing private key without reading its contents
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../../private/wireguard/admin.key"
+        get_checksum: false
+        get_mime: false
+      register: device_key_file
+
+    - name: Generate a key when the private key is absent or empty
+      ansible.builtin.command:
+        argv: [wg, genkey]
+      register: device_generated_key
+      changed_when: false
+      no_log: true
+      when: not device_key_file.stat.exists or device_key_file.stat.size == 0
+
+    - name: Validate the generated private key format
+      ansible.builtin.assert:
+        that: device_generated_key.stdout | trim is match('^[A-Za-z0-9+/]{43}=$')
+      no_log: true
+      when: not device_key_file.stat.exists or device_key_file.stat.size == 0
+
+    - name: Save the new private key atomically
+      ansible.builtin.copy:
+        content: "{{ device_generated_key.stdout | trim }}\n"
+        dest: "{{ playbook_dir }}/../../private/wireguard/admin.key"
+        mode: '0600'
+      no_log: true
+      when: not device_key_file.stat.exists or device_key_file.stat.size == 0
+
+    - name: Enforce private key permissions
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../../private/wireguard/admin.key"
+        mode: '0600'
+
+    - name: Derive the device public key from the preserved private key
+      ansible.builtin.command:
+        argv: [wg, pubkey]
+        stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../private/wireguard/admin.key') | trim }}"
+      register: device_public_key
+      changed_when: false
+      no_log: true
+
+    - name: Reconcile the device public key file
+      ansible.builtin.copy:
+        content: "{{ device_public_key.stdout | trim }}\n"
+        dest: "{{ playbook_dir }}/../../private/wireguard/admin.pub"
+        mode: '0600'

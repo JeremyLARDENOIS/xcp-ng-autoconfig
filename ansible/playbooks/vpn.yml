@@ -1,0 +1,55 @@
+---
+- name: Prepare the administrator device on this workstation
+  hosts: xcpng
+  connection: local
+  gather_facts: false
+  serial: 1
+  vars:
+    # sudo-rs prompts are not recognized by the current Ansible sudo plugin.
+    ansible_become_exe: "{{ '/usr/bin/sudo.ws' if '/usr/bin/sudo.ws' is file else '/usr/bin/sudo' }}"
+  roles:
+    - role: vpn_device
+      when: admin_vpn is defined and vpn_configure_workstation | default(true) | bool
+      ansible_connection: local
+      ansible_python_interpreter: /usr/bin/python3
+
+- name: Configure administration VPN access through the XCP-ng hosts
+  hosts: xcpng
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: vpn_admin_host
+      when: admin_vpn is defined
+
+- name: Configure administration VPN gateways
+  hosts: xcpng
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: router_network
+      when: admin_vpn is defined
+      ansible_host: "{{ router_address.split('/')[0] }}"
+      ansible_user: debian
+      ansible_port: 22
+      ansible_python_interpreter: /usr/bin/python3
+      ansible_ssh_common_args: "-o ProxyJump={{ router_bastion | quote }} -o StrictHostKeyChecking=accept-new"
+    - role: vpn_admin_router
+      when: admin_vpn is defined
+      ansible_host: "{{ router_address.split('/')[0] }}"
+      ansible_user: debian
+      ansible_port: 22
+      ansible_python_interpreter: /usr/bin/python3
+      ansible_ssh_common_args: "-o ProxyJump={{ router_bastion | quote }} -o StrictHostKeyChecking=accept-new"
+
+- name: Activate administration VPN access on this workstation
+  hosts: xcpng
+  connection: local
+  gather_facts: false
+  serial: 1
+  vars:
+    ansible_become_exe: "{{ '/usr/bin/sudo.ws' if '/usr/bin/sudo.ws' is file else '/usr/bin/sudo' }}"
+  roles:
+    - role: vpn_workstation
+      when: admin_vpn is defined and vpn_configure_workstation | default(true) | bool
+      ansible_connection: local
+      ansible_python_interpreter: /usr/bin/python3

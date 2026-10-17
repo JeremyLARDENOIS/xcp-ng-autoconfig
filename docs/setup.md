@@ -3,7 +3,8 @@
 `ansible/playbooks/setup.yml` is the single entry point for the initial setup.
 It creates the `private-net` internal network and imports an
 unmodified official Debian RAW image as a generic template. Host addressing,
-routing, router deployment and XOA deployment will be added incrementally.
+routing, router deployment and XOA deployment are included in the initial setup.
+Administration VPN deployment belongs to [vpn.yml](vpn.md), not this playbook.
 The setup also activates the private bridge and assigns the host private address.
 
 ## Requirements
