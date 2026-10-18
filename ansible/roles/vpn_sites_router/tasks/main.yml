@@ -1,0 +1,107 @@
+---
+- name: Require both public keys before configuring either peer
+  ansible.builtin.assert:
+    that:
+      - vpn_sites_public_key is match('^[A-Za-z0-9+/]{43}=$')
+      - hostvars[site_vpn.peer].vpn_sites_public_key is match('^[A-Za-z0-9+/]{43}=$')
+  when: not ansible_check_mode
+
+- name: Configure the intersite transport
+  become: true
+  when: not ansible_check_mode
+  block:
+    - name: Write the public intersite settings
+      ansible.builtin.template:
+        src: sites.conf.j2
+        dest: /etc/wireguard/wg-sites.settings
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Assemble the configuration without exporting its private key
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        candidate=$(mktemp /etc/wireguard/.wg-sites.XXXXXX)
+        trap 'rm -f "$candidate"' EXIT
+        {
+          printf '[Interface]\nPrivateKey = '
+          cat /etc/wireguard/sites.key
+          cat /etc/wireguard/wg-sites.settings
+        } > "$candidate"
+        if ! cmp -s "$candidate" /etc/wireguard/wg-sites.conf; then
+          install -m 0600 "$candidate" /etc/wireguard/wg-sites.conf
+          echo CHANGED
+        fi
+      register: vpn_sites_config
+      changed_when: "'CHANGED' in vpn_sites_config.stdout"
+      no_log: true
+
+    - name: Write the intersite interface input rules
+      ansible.builtin.template:
+        src: sites.nft.j2
+        dest: /etc/xcpng-sites.nft
+        owner: root
+        group: root
+        mode: '0600'
+        validate: /usr/sbin/nft --check --file %s
+      register: vpn_sites_input
+
+    - name: Install the intersite input firewall service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/xcpng-sites-firewall.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Intersite VPN input firewall
+          After=nftables.service xcpng-router-firewall.service
+          Before=wg-quick@wg-sites.service
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/sbin/nft --file /etc/xcpng-sites.nft
+          [Install]
+          WantedBy=multi-user.target
+      register: vpn_sites_firewall_service
+
+    - name: Prepare the persistent VPN dependency
+      ansible.builtin.file:
+        path: /etc/systemd/system/wg-quick@wg-sites.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Require both firewalls before starting the transport
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/wg-quick@wg-sites.service.d/firewall.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Requires=xcpng-router-firewall.service xcpng-sites-firewall.service
+          After=xcpng-router-firewall.service xcpng-sites-firewall.service
+      register: vpn_sites_dependency
+
+    - name: Apply the input firewall before enabling WireGuard
+      ansible.builtin.systemd_service:
+        name: xcpng-sites-firewall.service
+        daemon_reload: "{{ vpn_sites_firewall_service.changed or vpn_sites_dependency.changed }}"
+        enabled: true
+        state: "{{ 'restarted' if vpn_sites_input.changed or vpn_sites_firewall_service.changed else 'started' }}"
+
+    - name: Enable the persistent intersite interface
+      ansible.builtin.systemd_service:
+        name: wg-quick@wg-sites.service
+        enabled: true
+        state: "{{ 'restarted' if vpn_sites_config.changed else 'started' }}"
+
+    - name: Reconcile the active peer
+      ansible.builtin.shell: wg syncconf wg-sites <(wg-quick strip wg-sites)
+      args:
+        executable: /bin/bash
+      changed_when: false
+      no_log: true

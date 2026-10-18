@@ -74,6 +74,8 @@ See the [setup procedure](docs/setup.md) for verification and rollback.
 The separate [VPN playbook](docs/vpn.md) connects one Ubuntu NetworkManager
 workstation to the first site. It configures the VPN infrastructure and optionally
 the workstation; `setup.yml` remains the minimal infrastructure setup entry point.
+Reciprocal `site_vpn` settings optionally connect a pair of sites through their
+existing router VMs, using the same administrator profile on the workstation.
 
 ## Project layout
 

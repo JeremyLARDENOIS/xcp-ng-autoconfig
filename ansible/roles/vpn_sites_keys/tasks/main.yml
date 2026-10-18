@@ -1,0 +1,75 @@
+---
+- name: Read the guest routing table before creating the transport
+  ansible.builtin.command: ip -j -4 route show table all
+  register: vpn_sites_guest_routes
+  changed_when: false
+  check_mode: false
+
+- name: Reject an intersite subnet already routed through another interface
+  ansible.builtin.assert:
+    that:
+      - not (site_vpn.address | ansible.utils.ipaddr('network/prefix') | ansible.utils.network_in_network(item.dst))
+      - not (item.dst | ansible.utils.network_in_network(site_vpn.address | ansible.utils.ipaddr('network/prefix')))
+    fail_msg: "Intersite subnet overlaps existing guest route {{ item.dst }}."
+  loop: "{{ vpn_sites_guest_routes.stdout | from_json }}"
+  loop_control:
+    label: "{{ item.dst | default('default') }}"
+  when:
+    - item.dst | default('default') != 'default'
+    - item.dev | default('') != 'wg-sites'
+
+- name: Prepare the intersite key without exporting it
+  become: true
+  when: not ansible_check_mode
+  block:
+    - name: Install WireGuard tools
+      ansible.builtin.apt:
+        name: wireguard-tools
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Protect the WireGuard directory
+      ansible.builtin.file:
+        path: /etc/wireguard
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Check the preserved intersite key
+      ansible.builtin.stat:
+        path: /etc/wireguard/sites.key
+        get_checksum: false
+        get_mime: false
+      register: vpn_sites_key_file
+
+    - name: Generate and preserve a missing or empty intersite private key locally
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        candidate=$(mktemp /etc/wireguard/.sites-key.XXXXXX)
+        trap 'rm -f "$candidate"' EXIT
+        key=$(wg genkey)
+        printf '%s\n' "$key" > "$candidate"
+        wg pubkey < "$candidate" >/dev/null
+        install -m 0600 "$candidate" /etc/wireguard/sites.key
+        echo CHANGED
+      no_log: true
+      when: not vpn_sites_key_file.stat.exists or vpn_sites_key_file.stat.size == 0
+
+    - name: Enforce intersite key permissions
+      ansible.builtin.file:
+        path: /etc/wireguard/sites.key
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Derive only the intersite public key
+      ansible.builtin.shell: wg pubkey < /etc/wireguard/sites.key
+      register: vpn_sites_derived_key
+      changed_when: false
+
+    - name: Publish the public key for the following play
+      ansible.builtin.set_fact:
+        vpn_sites_public_key: "{{ vpn_sites_derived_key.stdout | trim }}"

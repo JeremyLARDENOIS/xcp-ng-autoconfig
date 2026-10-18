@@ -1,0 +1,65 @@
+---
+- name: Require both members of the intersite pair
+  ansible.builtin.assert:
+    that:
+      - site_vpn.address is defined
+      - site_vpn.endpoint is defined
+      - site_vpn.peer is defined
+      - site_vpn.peer != inventory_hostname
+      - site_vpn.peer in groups['xcpng']
+      - site_vpn.peer in ansible_play_hosts_all
+      - hostvars[site_vpn.peer].site_vpn is defined
+    fail_msg: Configure a distinct intersite peer and select both hosts in the same VPN run.
+
+- name: Require a reciprocal peer configuration
+  ansible.builtin.assert:
+    that:
+      - hostvars[site_vpn.peer].site_vpn.peer == inventory_hostname
+    fail_msg: The remote site must refer back to this inventory host.
+
+- name: Record the peer and existing LANs
+  ansible.builtin.set_fact:
+    vpn_sites_peer: "{{ hostvars[site_vpn.peer] }}"
+    vpn_sites_local_lan: "{{ router_address | ansible.utils.ipaddr('network/prefix') }}"
+    vpn_sites_remote_lan: "{{ hostvars[site_vpn.peer].router_address | ansible.utils.ipaddr('network/prefix') }}"
+    vpn_sites_local_admin: "{{ admin_vpn.client_address if admin_vpn is defined and admin_vpn.client_enabled | default(true) | bool else '' }}"
+    vpn_sites_remote_admin: "{{ hostvars[site_vpn.peer].admin_vpn.client_address if hostvars[site_vpn.peer].admin_vpn is defined and hostvars[site_vpn.peer].admin_vpn.client_enabled | default(true) | bool else '' }}"
+    vpn_sites_remote_xoa: "{{ hostvars[site_vpn.peer].xoa_address.split('/')[0] if hostvars[site_vpn.peer].xoa_address is defined else '' }}"
+    router_bastion: "{{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }}:{{ ansible_port | default(22) }}"
+
+- name: Validate the tunnel addresses and public endpoints
+  ansible.builtin.assert:
+    that:
+      - site_vpn.address is match('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/30$')
+      - site_vpn.address | ansible.utils.ipv4 == site_vpn.address
+      - vpn_sites_peer.site_vpn.address | ansible.utils.ipv4 == vpn_sites_peer.site_vpn.address
+      - vpn_sites_peer.site_vpn.address.endswith('/30')
+      - site_vpn.endpoint is match('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+      - site_vpn.endpoint | ansible.utils.ipv4 | ansible.utils.ipaddr('public') == site_vpn.endpoint
+      - vpn_sites_peer.site_vpn.endpoint | ansible.utils.ipv4 | ansible.utils.ipaddr('public') == vpn_sites_peer.site_vpn.endpoint
+      - site_vpn.endpoint != vpn_sites_peer.site_vpn.endpoint
+      - site_vpn.address != vpn_sites_peer.site_vpn.address
+      - site_vpn.address | ansible.utils.ipaddr('network/prefix') == vpn_sites_peer.site_vpn.address | ansible.utils.ipaddr('network/prefix')
+      - site_vpn.address | ansible.utils.ipaddr('network/prefix') | ansible.utils.network_in_usable(site_vpn.address.split('/')[0])
+      - site_vpn.address | ansible.utils.ipaddr('network/prefix') | ansible.utils.network_in_usable(vpn_sites_peer.site_vpn.address.split('/')[0])
+      - vpn_sites_local_lan != false
+      - vpn_sites_remote_lan != false
+      - not (vpn_sites_local_lan | ansible.utils.network_in_network(vpn_sites_remote_lan))
+      - not (vpn_sites_remote_lan | ansible.utils.network_in_network(vpn_sites_local_lan))
+      - admin_vpn is not defined or admin_vpn.endpoint == site_vpn.endpoint
+    fail_msg: Use distinct usable addresses in one /30, different public endpoints and non-overlapping LANs.
+
+- name: Reject tunnel overlap with configured LAN and administration networks
+  ansible.builtin.assert:
+    that:
+      - not (item | ansible.utils.network_in_network(site_vpn.address | ansible.utils.ipaddr('network/prefix')))
+      - not (site_vpn.address | ansible.utils.ipaddr('network/prefix') | ansible.utils.network_in_network(item))
+  loop: "{{ [vpn_sites_local_lan, vpn_sites_remote_lan] + ([admin_vpn.address | ansible.utils.ipaddr('network/prefix')] if admin_vpn is defined else []) + ([vpn_sites_peer.admin_vpn.address | ansible.utils.ipaddr('network/prefix')] if vpn_sites_peer.admin_vpn is defined else []) }}"
+
+- name: Reject administration networks overlapping either site LAN
+  ansible.builtin.assert:
+    that:
+      - not (item.0 | ansible.utils.network_in_network(item.1))
+      - not (item.1 | ansible.utils.network_in_network(item.0))
+    fail_msg: An administration network overlaps a site LAN.
+  loop: "{{ (([admin_vpn.address | ansible.utils.ipaddr('network/prefix')] if admin_vpn is defined else []) + ([vpn_sites_peer.admin_vpn.address | ansible.utils.ipaddr('network/prefix')] if vpn_sites_peer.admin_vpn is defined else [])) | product([vpn_sites_local_lan, vpn_sites_remote_lan]) | list }}"

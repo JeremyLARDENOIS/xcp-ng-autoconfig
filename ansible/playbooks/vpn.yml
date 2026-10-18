@@ -1,4 +1,12 @@
 ---
+- name: Validate the selected intersite pair before deployment
+  hosts: xcpng
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: vpn_sites_contract
+      when: site_vpn is defined
+
 - name: Prepare the administrator device on this workstation
   hosts: xcpng
   connection: local
@@ -13,6 +21,19 @@
       ansible_connection: local
       ansible_python_interpreter: /usr/bin/python3
 
+- name: Prepare independent intersite gateway keys
+  hosts: xcpng
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: vpn_sites_keys
+      when: site_vpn is defined
+      ansible_host: "{{ router_address.split('/')[0] }}"
+      ansible_user: debian
+      ansible_port: 22
+      ansible_python_interpreter: /usr/bin/python3
+      ansible_ssh_common_args: "-o ProxyJump={{ router_bastion | quote }} -o StrictHostKeyChecking=accept-new"
+
 - name: Configure administration VPN access through the XCP-ng hosts
   hosts: xcpng
   gather_facts: false
@@ -20,6 +41,8 @@
   roles:
     - role: vpn_admin_host
       when: admin_vpn is defined
+    - role: vpn_sites_host
+      when: site_vpn is defined
 
 - name: Configure administration VPN gateways
   hosts: xcpng
@@ -27,7 +50,20 @@
   any_errors_fatal: true
   roles:
     - role: router_network
-      when: admin_vpn is defined
+      when: admin_vpn is defined or site_vpn is defined
+      ansible_host: "{{ router_address.split('/')[0] }}"
+      ansible_user: debian
+      ansible_port: 22
+      ansible_python_interpreter: /usr/bin/python3
+      ansible_ssh_common_args: "-o ProxyJump={{ router_bastion | quote }} -o StrictHostKeyChecking=accept-new"
+
+- name: Configure the intersite gateways after public key exchange
+  hosts: xcpng
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: vpn_sites_router
+      when: site_vpn is defined
       ansible_host: "{{ router_address.split('/')[0] }}"
       ansible_user: debian
       ansible_port: 22

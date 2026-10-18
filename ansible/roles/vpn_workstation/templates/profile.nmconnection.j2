@@ -11,7 +11,7 @@ peer-routes=true
 
 [wireguard-peer.{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../private/wireguard/sites/' ~ inventory_hostname ~ '.pub') | trim }}]
 endpoint={{ admin_vpn.endpoint }}:51821
-allowed-ips={{ vpn_network.lan }};{{ vpn_network.network }};
+allowed-ips={{ vpn_destinations | join(';') }};
 persistent-keepalive=25
 
 [ipv4]

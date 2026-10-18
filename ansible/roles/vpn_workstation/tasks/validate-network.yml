@@ -17,6 +17,7 @@
     vpn_network:
       lan: "{{ router_address | ansible.utils.ipaddr('network/prefix') }}"
       network: "{{ admin_vpn.address | ansible.utils.ipaddr('network/prefix') }}"
+      remote_lan: "{{ vpn_sites_remote_lan | default('') }}"
 
 - name: Reject reserved addresses and overlapping VPN destinations
   ansible.builtin.assert:
@@ -30,6 +31,10 @@
       - not (vpn_network.network | ansible.utils.network_in_network(admin_vpn.endpoint))
     fail_msg: Device and gateway must be distinct usable addresses; LAN, VPN and endpoint must not overlap.
 
+- name: Record all destinations of the single administrator profile
+  ansible.builtin.set_fact:
+    vpn_destinations: "{{ [vpn_network.lan, vpn_network.network] + ([vpn_network.remote_lan] if vpn_network.remote_lan else []) }}"
+
 - name: Read existing IPv4 routes from all tables
   ansible.builtin.command:
     argv: [ip, -j, -4, route, show, table, all]
@@ -40,17 +45,15 @@
 - name: Reject routes conflicting with the VPN destinations
   ansible.builtin.assert:
     that:
-      - not (vpn_network.lan | ansible.utils.network_in_network(item.dst))
-      - not (item.dst | ansible.utils.network_in_network(vpn_network.lan))
-      - not (vpn_network.network | ansible.utils.network_in_network(item.dst))
-      - not (item.dst | ansible.utils.network_in_network(vpn_network.network))
-    fail_msg: "VPN destinations overlap an existing route: {{ item.dst }}."
-  loop: "{{ vpn_existing_routes.stdout | from_json }}"
+      - not (item.1 | ansible.utils.network_in_network(item.0.dst))
+      - not (item.0.dst | ansible.utils.network_in_network(item.1))
+    fail_msg: "VPN destination {{ item.1 }} overlaps an existing route: {{ item.0.dst }}."
+  loop: "{{ vpn_existing_routes.stdout | from_json | product(vpn_destinations) | list }}"
   loop_control:
-    label: "{{ item.dst | default('default') }}"
+    label: "{{ item.0.dst | default('default') }} / {{ item.1 }}"
   when:
-    - item.dst | default('default') != 'default'
-    - item.dev | default('') != vpn_profile
+    - item.0.dst | default('default') != 'default'
+    - item.0.dev | default('') != vpn_profile
 
 - name: Read existing interfaces
   ansible.builtin.command:

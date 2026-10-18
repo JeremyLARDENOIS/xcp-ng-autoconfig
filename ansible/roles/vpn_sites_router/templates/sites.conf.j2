@@ -1,0 +1,9 @@
+Address = {{ site_vpn.address }}
+ListenPort = 51820
+
+[Peer]
+PublicKey = {{ hostvars[site_vpn.peer].vpn_sites_public_key }}
+Endpoint = {{ vpn_sites_peer.site_vpn.endpoint }}:51820
+AllowedIPs = {{ vpn_sites_peer.site_vpn.address.split('/')[0] }}/32, {{ vpn_sites_remote_lan }}{% if vpn_sites_remote_admin %}, {{ vpn_sites_remote_admin }}{% endif %}
+
+PersistentKeepalive = 25

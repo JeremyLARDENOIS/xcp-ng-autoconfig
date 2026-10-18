@@ -1,11 +1,56 @@
+{% if site_vpn is defined %}
+{% set vpn_sites_peer = hostvars[site_vpn.peer] %}
+{% set vpn_sites_remote_lan = vpn_sites_peer.router_address.rsplit('.', 1)[0] ~ '.0/' ~ vpn_sites_peer.router_address.split('/')[1] %}
+{% set vpn_sites_remote_admin = vpn_sites_peer.admin_vpn.client_address if vpn_sites_peer.admin_vpn is defined and vpn_sites_peer.admin_vpn.client_enabled | default(true) | bool else '' %}
+{% set vpn_sites_local_admin = admin_vpn.client_address if admin_vpn is defined and admin_vpn.client_enabled | default(true) | bool else '' %}
+{% set vpn_sites_remote_xoa = vpn_sites_peer.xoa_address.split('/')[0] if vpn_sites_peer.xoa_address is defined else '' %}
+{% endif %}
 {% set subnet = router_address.rsplit('.', 1)[0] ~ '.0/' ~ router_address.split('/')[1] %}
 # Reload only the project table, preserving other firewall tables.
 add table inet xcpng_router
 flush table inet xcpng_router
 table inet xcpng_router {
+{% if site_vpn is defined %}
+    chain output {
+        type filter hook output priority filter; policy accept;
+        # Locally generated diagnostics must not leak through the default route.
+        oifname "eth0" ip daddr {{ vpn_sites_remote_lan }} counter drop
+{% if vpn_sites_remote_admin %}
+        oifname "eth0" ip daddr {{ vpn_sites_remote_admin }} counter drop
+{% endif %}
+    }
+{% endif %}
     chain forward {
         type filter hook forward priority filter; policy drop;
         ct state invalid counter drop
+{% if site_vpn is defined %}
+        # Never send private remote traffic through the public default route.
+        oifname "eth0" ip daddr {{ vpn_sites_remote_lan }} counter drop
+{% if vpn_sites_remote_admin %}
+        oifname "eth0" ip daddr {{ vpn_sites_remote_admin }} counter drop
+{% endif %}
+{% if vpn_sites_local_admin %}
+        iifname "wg-admin" oifname "wg-sites" ip saddr {{ vpn_sites_local_admin }} ip daddr {{ vpn_sites_remote_lan }} counter accept
+        iifname "wg-sites" oifname "wg-admin" ip saddr {{ vpn_sites_remote_lan }} ip daddr {{ vpn_sites_local_admin }} ct state established,related counter accept
+{% endif %}
+{% if vpn_sites_remote_admin %}
+        iifname "wg-sites" oifname "eth0" ip saddr {{ vpn_sites_remote_admin }} ip daddr {{ subnet }} counter accept
+        iifname "eth0" oifname "wg-sites" ip saddr {{ subnet }} ip daddr {{ vpn_sites_remote_admin }} ct state established,related counter accept
+{% endif %}
+{% if xoa_address is defined %}
+        iifname "eth0" oifname "wg-sites" ip saddr {{ xoa_address.split('/')[0] }} ip daddr {{ vpn_sites_peer.bootstrap_host_address.split('/')[0] }} tcp dport 443 counter accept
+        iifname "wg-sites" oifname "eth0" ip saddr {{ vpn_sites_peer.bootstrap_host_address.split('/')[0] }} ip daddr {{ xoa_address.split('/')[0] }} ct state established,related counter accept
+{% endif %}
+{% if vpn_sites_remote_xoa %}
+        iifname "wg-sites" oifname "eth0" ip saddr {{ vpn_sites_remote_xoa }} ip daddr {{ bootstrap_host_address.split('/')[0] }} tcp dport 443 counter accept
+        iifname "eth0" oifname "wg-sites" ip saddr {{ bootstrap_host_address.split('/')[0] }} ip daddr {{ vpn_sites_remote_xoa }} ct state established,related counter accept
+{% endif %}
+        iifname "eth0" oifname "wg-sites" ip saddr {{ subnet }} ip daddr {{ vpn_sites_remote_lan }} ip protocol icmp counter accept
+        iifname "wg-sites" oifname "eth0" ip saddr {{ vpn_sites_remote_lan }} ip daddr {{ subnet }} ip protocol icmp counter accept
+        # Unknown tunnel traffic must not reach the generic established rule.
+        iifname "wg-sites" counter drop
+        oifname "wg-sites" counter drop
+{% endif %}
 {% if admin_vpn is defined %}
 {% if admin_vpn.client_enabled | default(true) | bool %}
         iifname "wg-admin" oifname "eth0" ip saddr {{ admin_vpn.client_address }} ip daddr {{ subnet }} counter accept
@@ -20,6 +65,12 @@ table inet xcpng_router {
     }
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
+{% if site_vpn is defined %}
+        ip daddr {{ vpn_sites_remote_lan }} counter return
+{% if vpn_sites_remote_admin %}
+        ip daddr {{ vpn_sites_remote_admin }} counter return
+{% endif %}
+{% endif %}
 {% if admin_vpn is defined %}
         ip daddr {{ admin_vpn.address.rsplit('.', 1)[0] ~ '.0/24' }} counter return
 {% endif %}

@@ -3,6 +3,11 @@ all:
     xcpng:
       hosts:
         host01:
+          # Configure both members to enable their intersite tunnel.
+          site_vpn:
+            address: 10.90.0.1/30
+            endpoint: 203.0.113.10
+            peer: host02
           # Opt in only the first site while validating VPN access.
           admin_vpn:
             address: 10.91.1.1/24
@@ -14,6 +19,10 @@ all:
           router_address: 10.20.1.1/24
           template_sr_uuid: REPLACE_WITH_LOCAL_STORAGE_UUID
         host02:
+          site_vpn:
+            address: 10.90.0.2/30
+            endpoint: 198.51.100.20
+            peer: host01
           ansible_host: host02.example.com
           bootstrap_host_address: 10.20.2.254/24
           router_address: 10.20.2.1/24

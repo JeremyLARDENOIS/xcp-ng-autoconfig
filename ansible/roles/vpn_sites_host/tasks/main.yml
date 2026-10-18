@@ -1,0 +1,57 @@
+---
+- name: Require the validated intersite contract
+  ansible.builtin.assert:
+    that:
+      - vpn_sites_peer is defined
+      - vpn_sites_remote_lan is defined
+      - vpn_sites_local_lan is defined
+      - vpn_sites_remote_admin is defined
+      - vpn_sites_remote_xoa is defined
+    fail_msg: Validate the intersite contract before changing host networking.
+
+- name: Remember the public SSH bastion independently of the admin VPN
+  ansible.builtin.set_fact:
+    router_bastion: "{{ ansible_user | default('root') }}@{{ ansible_host | default(inventory_hostname) }}:{{ ansible_port | default(22) }}"
+
+- name: Configure persistent intersite host routing
+  when: not ansible_check_mode
+  block:
+    - name: Install the intersite host files
+      ansible.builtin.raw: |
+        set -eu
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"' EXIT
+        cat > "$work/script" <<'SITES_SCRIPT'
+        {{ lookup('file', role_path ~ '/files/vpn-sites.sh') }}
+        SITES_SCRIPT
+        cat > "$work/service" <<'SITES_SERVICE'
+        {{ lookup('template', 'vpn-sites.service.j2') }}
+        SITES_SERVICE
+        if ! cmp -s "$work/script" /usr/local/sbin/xcpng-sites-vpn; then
+          install -m 0755 "$work/script" /usr/local/sbin/xcpng-sites-vpn
+          echo CHANGED
+        fi
+        if ! cmp -s "$work/service" /etc/systemd/system/xcpng-sites-vpn.service; then
+          install -m 0644 "$work/service" /etc/systemd/system/xcpng-sites-vpn.service
+          echo CHANGED
+        fi
+        systemctl daemon-reload
+        if ! systemctl is-enabled xcpng-sites-vpn.service >/dev/null 2>&1; then
+          systemctl enable xcpng-sites-vpn.service
+          echo CHANGED
+        fi
+      register: vpn_sites_host_install
+      changed_when: "'CHANGED' in vpn_sites_host_install.stdout"
+
+    - name: Apply the intersite host rules and return routes
+      ansible.builtin.raw: >-
+        /usr/local/sbin/xcpng-sites-vpn
+        {{ router_address.split('/')[0] | quote }}
+        {{ bootstrap_host_address.split('/')[0] | quote }}
+        {{ site_vpn.endpoint | quote }}
+        {{ vpn_sites_peer.site_vpn.endpoint | quote }}
+        {{ vpn_sites_remote_lan | quote }}
+        {{ vpn_sites_remote_admin | quote }}
+        {{ vpn_sites_remote_xoa | quote }}
+      register: vpn_sites_host_apply
+      changed_when: "'CHANGED' in vpn_sites_host_apply.stdout"

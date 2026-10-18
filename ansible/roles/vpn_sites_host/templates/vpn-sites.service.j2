@@ -1,0 +1,11 @@
+[Unit]
+Description=Intersite VPN host routing
+Requires=xcpng-private-net.service
+After=xcpng-private-net.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/xcpng-sites-vpn {{ router_address.split('/')[0] }} {{ bootstrap_host_address.split('/')[0] }} {{ site_vpn.endpoint }} {{ vpn_sites_peer.site_vpn.endpoint }} {{ vpn_sites_remote_lan }} "{{ vpn_sites_remote_admin }}" "{{ vpn_sites_remote_xoa }}"
+
+[Install]
+WantedBy=multi-user.target

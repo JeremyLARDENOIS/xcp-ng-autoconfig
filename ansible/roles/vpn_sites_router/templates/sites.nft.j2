@@ -1,0 +1,15 @@
+add table inet xcpng_sites
+flush table inet xcpng_sites
+table inet xcpng_sites {
+    chain input {
+        type filter hook input priority filter; policy accept;
+        iifname "wg-sites" meta nfproto ipv4 ct state invalid counter drop
+        iifname "wg-sites" ip saddr {{ vpn_sites_peer.site_vpn.address.split('/')[0] }} ip protocol icmp counter accept
+        iifname "wg-sites" ip saddr {{ vpn_sites_remote_lan }} ip protocol icmp counter accept
+{% if vpn_sites_remote_admin %}
+        iifname "wg-sites" ip saddr {{ vpn_sites_remote_admin }} ip protocol icmp counter accept
+        iifname "wg-sites" ip saddr {{ vpn_sites_remote_admin }} tcp dport 22 counter accept
+{% endif %}
+        iifname "wg-sites" counter drop
+    }
+}
