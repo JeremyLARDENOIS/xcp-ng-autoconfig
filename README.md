@@ -77,6 +77,19 @@ the workstation; `setup.yml` remains the minimal infrastructure setup entry poin
 Reciprocal `site_vpn` settings optionally connect a pair of sites through their
 existing router VMs, using the same administrator profile on the workstation.
 
+Once the private connections are available, the [XOA configuration playbook](docs/xoa.md)
+registers the inventory pools through their private addresses. It uses manually
+supplied credentials and does not create tokens for application deployments.
+Keep credentials in inventory-relative Ansible Vault files; the
+[XOA procedure](docs/xoa.md#prepare-credentials) explains preparation and use.
+When the shared inventory contains encrypted variables, supply `--ask-vault-pass`
+also when running the setup or VPN playbooks.
+
+The setup optionally [forwards public TCP 443](docs/setup.md#optional-public-https-forwarding)
+to a chosen application VM on the local private network. It is disabled unless
+`https_forward_address` is configured; applications and TLS certificates remain
+the responsibility of the destination's owner.
+
 ## Project layout
 
 - `ansible/playbooks/`: entry points; `setup.yml` runs the implemented setup steps.

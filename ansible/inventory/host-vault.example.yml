@@ -1,0 +1,4 @@
+# Template only: copy under private/host_vars/<inventory-name>/vault.yml.
+# Encrypt before filling in the real password with ansible-vault edit.
+# Required only for a missing XOA pool registration; SSH keys are separate.
+xoa_pool_password: ""

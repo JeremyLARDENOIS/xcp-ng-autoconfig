@@ -22,6 +22,9 @@ Python interpreter. The image is neither converted nor customized.
 
 Run all commands from the repository root so Ansible loads `ansible.cfg`.
 
+If the inventory has encrypted variables, also pass `--ask-vault-pass` when
+running this playbook. See [inventory secrets with Vault](xoa.md#prepare-credentials).
+
 ```sh
 mkdir -p private
 cp ansible/inventory/hosts.example.yml private/hosts.yml
@@ -386,3 +389,67 @@ page load alone proves only private reachability. For shell-level DNS/HTTP
 checks, the appliance system account must first be enabled using the official
 procedure; setup does not inject a password or enable SSH login. Record actual
 results and check access again after a host reboot.
+
+## Optional public HTTPS forwarding
+
+Set `https_forward_address` on a host to publish a local application VM:
+
+```yaml
+host01:
+  # Other inventory settings remain unchanged.
+  https_forward_address: 10.20.1.10
+```
+
+The destination must be in that host's private /24, with an address from `.2`
+to `.253`, excluding XOA. The router (`.1`) and Dom0 (`.254`) cannot be targets.
+Omit the option or set it to an empty string to disable publication.
+
+Run the usual setup command for the selected host:
+
+```sh
+ansible-playbook -i private/hosts.yml ansible/playbooks/setup.yml --limit host01 --check --ask-vault-pass
+ansible-playbook -i private/hosts.yml ansible/playbooks/setup.yml --limit host01 --ask-vault-pass
+```
+
+Check mode validates the destination but does not apply or simulate live
+iptables rules. Omit `--ask-vault-pass` if the inventory has no encrypted files.
+
+Dom0 redirects incoming public IPv4 TCP 443 to the VM's TCP 443 and applies SNAT
+to its own private address, keeping return traffic on Dom0. The VM sees Dom0 as
+the client, not the original Internet address. This does not require a route
+through the router VM. HTTPS is passed through unchanged: certificates, domains,
+reverse proxies and the application itself belong to the destination's owner.
+
+The public IPv4 TCP 443 endpoint now serves the target application instead of
+Dom0's HTTPS service. Private host and XOA administration addresses remain
+available. UDP 443, IPv6 publication, other ports, remote-site targets and
+hairpin access from the LAN or VPN are not provided by this option. Existing
+IPv6 policy is unchanged.
+
+The startup helper persists the setting through `xcpng-private-net.service`.
+It manages only `XCPNG-HTTPS-DNAT`, `XCPNG-HTTPS-SNAT`, `XCPNG-HTTPS-FWD` and their
+jumps; it preserves other project and foreign rules. Empty owned chains and
+inert jumps remain after disabling. The destination VM must already exist,
+listen on TCP 443, and accept connections from Dom0's private address.
+
+### Verify or disable
+
+1. From an external network, connect to the public address using the domain
+   and certificate served by the target. For example, with your actual values:
+
+   ```sh
+   curl --connect-timeout 5 --max-time 10 \
+     --resolve app.example.com:443:203.0.113.10 https://app.example.com/
+   ```
+
+2. Check private administration access still works and rerun setup: expect no
+   changes once the setting is applied.
+3. Change the destination and rerun to replace the owned rules. New connections
+   should reach the new VM.
+4. Remove the setting or use `https_forward_address: ""` and rerun to empty the
+   publication rules. This does not modify or stop the application VM.
+5. Validate reboot recovery separately, without rerunning Ansible first.
+
+Use fresh connections for these checks: existing NAT mappings can remain in
+conntrack until they expire. This playbook does not flush connection tracking.
+Do not enable publication to XOA as a substitute for private VPN access.

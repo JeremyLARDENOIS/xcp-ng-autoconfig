@@ -1,0 +1,79 @@
+---
+- name: Register a missing pool with the configured certificate policy
+  ansible.builtin.uri:
+    url: "{{ xoa_api_url }}/rest/v0/servers"
+    method: POST
+    url_username: "{{ xoa_api_username }}"
+    url_password: "{{ xoa_api_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ xoa_api_validate_certs | default(true) }}"
+    ca_path: "{{ xoa_api_ca_path | default(omit) }}"
+    follow_redirects: none
+    use_netrc: false
+    body_format: json
+    body:
+      host: "{{ pool.host }}"
+      label: "{{ pool.name }}"
+      username: "{{ hostvars[pool.name].ansible_user | default('root') }}"
+      password: "{{ hostvars[pool.name].xoa_pool_password }}"
+      allowUnauthorized: "{{ not (hostvars[pool.name].xoa_pool_validate_certs | default(true) | bool) }}"
+    status_code: 201
+  register: xoa_added_pool
+  changed_when: true
+  when: pool.id == ''
+  no_log: true
+
+- name: Connect a new or disconnected pool
+  ansible.builtin.uri:
+    url: "{{ xoa_api_url }}/rest/v0/servers/{{ pool.id if pool.id != '' else xoa_added_pool.json.id }}/actions/connect?sync=true"
+    method: POST
+    url_username: "{{ xoa_api_username }}"
+    url_password: "{{ xoa_api_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ xoa_api_validate_certs | default(true) }}"
+    ca_path: "{{ xoa_api_ca_path | default(omit) }}"
+    follow_redirects: none
+    use_netrc: false
+    timeout: 60
+    status_code: 204
+    return_content: true
+  register: xoa_connect_result
+  failed_when: false
+  changed_when: xoa_connect_result.status | default(-1) == 204
+  when: pool.status != 'connected'
+  no_log: true
+
+- name: Report a connection failure without exposing the API response
+  ansible.builtin.fail:
+    msg: >-
+      XOA could not connect {{ pool.name }} through {{ pool.host }}
+      (HTTP {{ xoa_connect_result.status | default(-1) }}).
+      Recognized error codes:
+      {{ ((xoa_connect_result.content | default('')) ~ ' ' ~
+          (xoa_connect_result.json | default({}) | to_json))
+         | regex_findall('DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|CERT_HAS_EXPIRED|ERR_TLS_CERT_ALTNAME_INVALID|UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|SESSION_AUTHENTICATION_FAILED|ETIMEDOUT|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH')
+         | unique | list | join(', ') or 'none; inspect the connection error in XOA Settings > Servers' }}.
+      The registration is retained for retry. No raw response or credentials are displayed.
+  when:
+    - pool.status != 'connected'
+    - xoa_connect_result.status | default(-1) != 204
+
+- name: Verify the pool is connected
+  ansible.builtin.uri:
+    url: "{{ xoa_api_url }}/rest/v0/servers/{{ pool.id if pool.id != '' else xoa_added_pool.json.id }}"
+    url_username: "{{ xoa_api_username }}"
+    url_password: "{{ xoa_api_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ xoa_api_validate_certs | default(true) }}"
+    ca_path: "{{ xoa_api_ca_path | default(omit) }}"
+    follow_redirects: none
+    use_netrc: false
+  register: xoa_pool_connection
+  until: xoa_pool_connection.json.status | default('') == 'connected'
+  retries: 5
+  delay: 2
+  no_log: true
+
+- name: Report the connected pool
+  ansible.builtin.debug:
+    msg: "{{ pool.name }} is connected through {{ pool.host }}."

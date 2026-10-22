@@ -14,6 +14,8 @@ all:
             endpoint: 203.0.113.10
             client_address: 10.91.1.10/32
           xoa_address: 10.20.1.2/24
+          # Optional public TCP 443 -> local application VM TCP 443.
+          # https_forward_address: 10.20.1.10
           ansible_host: host01.example.com
           bootstrap_host_address: 10.20.1.254/24
           router_address: 10.20.1.1/24
@@ -28,6 +30,15 @@ all:
           router_address: 10.20.2.1/24
           template_sr_uuid: REPLACE_WITH_LOCAL_STORAGE_UUID
       vars:
+        # Used by xoa.yml. Store credentials in encrypted inventory variables.
+        xoa_api_url: https://xoa.example.com
+        # Set false explicitly for a private appliance with an untrusted certificate.
+        # xoa_api_validate_certs: false
+        # Independent setting: XOA verifies each host certificate by default.
+        # Set false here or per host to accept self-signed XAPI certificates.
+        # xoa_pool_validate_certs: false
+        # Optional trusted PEM CA bundle on the workstation.
+        # xoa_api_ca_path: /absolute/path/to/private/xoa-ca.pem
         ansible_user: root
         router_ssh_public_key_file: ~/.ssh/id_ed25519.pub
         router_dns_servers: [1.1.1.1, 9.9.9.9]

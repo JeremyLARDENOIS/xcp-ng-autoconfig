@@ -1,0 +1,4 @@
+# Template only: copy under private/group_vars/xcpng/vault.yml, then encrypt.
+# Edit real values with ansible-vault edit after encryption.
+xoa_api_username: ""
+xoa_api_password: ""

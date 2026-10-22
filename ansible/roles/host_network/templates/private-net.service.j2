@@ -5,7 +5,7 @@ After=xapi.service iptables.service ip6tables.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/xcpng-private-net {{ bootstrap_host_address }}
+ExecStart=/usr/local/sbin/xcpng-private-net {{ bootstrap_host_address }} {{ https_forward_address | default('') }}
 TimeoutStartSec=180
 
 [Install]

@@ -1,5 +1,9 @@
 # Administration VPN
 
+If the inventory has encrypted variables, also pass `--ask-vault-pass` when
+running this playbook. This is separate from local sudo's `--ask-become-pass`.
+See [inventory secrets with Vault](xoa.md#prepare-credentials).
+
 `ansible/playbooks/vpn.yml` deploys administration VPN access after the
 [initial infrastructure setup](setup.md). It configures the XCP-ng host, its existing router
 VM and, by default, the Ubuntu workstation running Ansible. An optional intersite

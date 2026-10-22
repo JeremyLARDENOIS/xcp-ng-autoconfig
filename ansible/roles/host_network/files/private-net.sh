@@ -5,6 +5,16 @@ set -eu
 PATH=/opt/xensource/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 address=$1
+https_destination=${2:-}
+# Validate before changing networking, including manual calls to this helper.
+if [ -n "$https_destination" ]; then
+    test "${address#*/}" = 24
+    test "${https_destination%.*}" = "${address%.*}"
+    octet=${https_destination##*.}
+    case "$octet" in ''|*[!0-9]*|0*) echo 'Invalid HTTPS destination' >&2; exit 1;; esac
+    test "${#octet}" -le 3
+    test "$octet" -ge 2 && test "$octet" -le 253
+fi
 # An active xapi.service does not guarantee that its API is ready.
 attempt=0
 until host=$(timeout 5 xe host-list --minimal); do
@@ -67,4 +77,44 @@ ensure_rule ip6tables filter FORWARD -I -o private-net -m comment --comment xcpn
 if [ "$(sysctl -n net.ipv4.ip_forward)" != 1 ]; then
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
     echo CHANGED
+fi
+
+
+# Optional local HTTPS publication. This table set is separate from VPN rules.
+# SNAT keeps replies on Dom0 instead of the VM's default router.
+reconcile_https_chain() {
+    table=$1; chain=$2; desired=$3
+    if ! iptables -t "$table" -S "$chain" >/dev/null 2>&1; then
+        iptables -t "$table" -N "$chain"
+        echo CHANGED
+    fi
+    current=$(iptables -t "$table" -S "$chain" | sed '1d')
+    if [ "$current" != "$desired" ]; then
+        iptables -t "$table" -F "$chain"
+        printf '%s\n' "$desired" | while IFS= read -r rule; do
+            [ -n "$rule" ] || continue
+            # Only validated addresses and the discovered interface enter rules.
+            set -- $rule
+            iptables -t "$table" "$@"
+        done
+        echo CHANGED
+    fi
+}
+# Disabled fresh installs need no HTTPS chains. Existing chains are emptied
+# when the option is removed so a later reboot cannot restore the old target.
+if [ -n "$https_destination" ] || iptables -t nat -S XCPNG-HTTPS-DNAT >/dev/null 2>&1; then
+    dnat=''; snat=''; forward=''
+    if [ -n "$https_destination" ]; then
+        host_ip=${address%/*}
+        dnat="-A XCPNG-HTTPS-DNAT -i $uplink -p tcp -m tcp --dport 443 -m addrtype --dst-type LOCAL -j DNAT --to-destination $https_destination:443"
+        snat="-A XCPNG-HTTPS-SNAT -d $https_destination/32 -o private-net -p tcp -m tcp --dport 443 -m conntrack --ctstate DNAT --ctorigdstport 443 -j SNAT --to-source $host_ip"
+        forward="-A XCPNG-HTTPS-FWD -d $https_destination/32 -i $uplink -o private-net -p tcp -m tcp --dport 443 -m conntrack --ctstate DNAT --ctorigdstport 443 -j ACCEPT
+-A XCPNG-HTTPS-FWD -s $https_destination/32 -i private-net -o $uplink -p tcp -m tcp --sport 443 -m conntrack --ctstate DNAT --ctorigdstport 443 -j ACCEPT"
+    fi
+    reconcile_https_chain nat XCPNG-HTTPS-DNAT "$dnat"
+    reconcile_https_chain nat XCPNG-HTTPS-SNAT "$snat"
+    reconcile_https_chain filter XCPNG-HTTPS-FWD "$forward"
+    ensure_rule iptables nat PREROUTING -I -j XCPNG-HTTPS-DNAT
+    ensure_rule iptables nat POSTROUTING -I -j XCPNG-HTTPS-SNAT
+    ensure_rule iptables filter FORWARD -I -j XCPNG-HTTPS-FWD
 fi

@@ -1,0 +1,11 @@
+---
+- name: Register the inventory pools in Xen Orchestra
+  hosts: xcpng
+  strategy: linear
+  run_once: true
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  roles:
+    - role: xoa_pools

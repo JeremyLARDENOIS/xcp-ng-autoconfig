@@ -1,0 +1,92 @@
+---
+- name: Validate the XOA API settings
+  ansible.builtin.assert:
+    that:
+      - xoa_api_url is defined
+      - xoa_api_url is match('^https://[^/?#@]+$')
+      - groups.get('xcpng', []) | length > 0
+    fail_msg: Set xoa_api_url to an HTTPS origin without a trailing slash and provide an xcpng inventory group.
+
+- name: Require manually supplied XOA credentials
+  ansible.builtin.assert:
+    that:
+      - xoa_api_username | default('') | length > 0
+      - xoa_api_password | default('') | length > 0
+  no_log: true
+
+- name: Inspect the installed REST API before making changes
+  ansible.builtin.uri:
+    url: "{{ xoa_api_url }}/rest/v0/docs/swagger.json"
+    url_username: "{{ xoa_api_username }}"
+    url_password: "{{ xoa_api_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ xoa_api_validate_certs | default(true) }}"
+    ca_path: "{{ xoa_api_ca_path | default(omit) }}"
+    follow_redirects: none
+    use_netrc: false
+    return_content: true
+  register: xoa_api_schema
+  check_mode: false
+  no_log: true
+
+- name: Require the server registration and connection endpoints
+  ansible.builtin.assert:
+    that:
+      - "'get' in xoa_api_schema.json.paths.get('/servers', {})"
+      - "'post' in xoa_api_schema.json.paths.get('/servers', {})"
+      - "'post' in xoa_api_schema.json.paths.get('/servers/{id}/actions/connect', {})"
+    fail_msg: This XOA REST API does not expose the required server endpoints. Check its version and built-in API documentation.
+
+- name: Read registered servers
+  ansible.builtin.uri:
+    url: "{{ xoa_api_url }}/rest/v0/servers?fields=id,host,label,status,allowUnauthorized"
+    url_username: "{{ xoa_api_username }}"
+    url_password: "{{ xoa_api_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ xoa_api_validate_certs | default(true) }}"
+    ca_path: "{{ xoa_api_ca_path | default(omit) }}"
+    follow_redirects: none
+    use_netrc: false
+    return_content: true
+  register: xoa_registered_servers
+  check_mode: false
+  no_log: true
+
+- name: Require an unpaginated server list
+  ansible.builtin.assert:
+    that:
+      - xoa_registered_servers.json is sequence
+      - xoa_registered_servers.json is not string
+      - xoa_registered_servers.json is not mapping
+    fail_msg: Unexpected REST server collection response; no connections have been changed.
+
+- name: Initialize the registration plan
+  ansible.builtin.set_fact:
+    xoa_pool_plan: []
+
+- name: Plan every pool before modifying XOA
+  ansible.builtin.include_tasks: plan-pool.yml
+  loop: "{{ groups['xcpng'] }}"
+  loop_control:
+    loop_var: pool_name
+
+- name: Reject inventory entries referring to the same endpoint
+  ansible.builtin.assert:
+    that:
+      - xoa_pool_plan | map(attribute='host') | unique | length == xoa_pool_plan | length
+    fail_msg: Each inventory entry must represent a distinct single-host pool.
+
+- name: Display the pool registration plan
+  ansible.builtin.debug:
+    msg: "{{ item.name }}: {{ 'register' if item.id == '' else ('already connected' if item.status == 'connected' else 'connect existing registration') }} ({{ item.host }})"
+  loop: "{{ xoa_pool_plan }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Apply the pool registrations
+  ansible.builtin.include_tasks: register-pool.yml
+  loop: "{{ xoa_pool_plan }}"
+  loop_control:
+    loop_var: pool
+    label: "{{ pool.name }}"
+  when: not ansible_check_mode

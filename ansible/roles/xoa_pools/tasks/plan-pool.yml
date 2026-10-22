@@ -1,0 +1,61 @@
+---
+- name: Require the private pool address
+  ansible.builtin.assert:
+    that:
+      - hostvars[pool_name].bootstrap_host_address is defined
+      - hostvars[pool_name].bootstrap_host_address is match('^10\.[0-9]+\.[0-9]+\.[0-9]+/24$')
+    fail_msg: Set bootstrap_host_address for each single-host pool.
+
+- name: Identify existing registrations by endpoint or inventory label
+  ansible.builtin.set_fact:
+    xoa_pool_host: "{{ hostvars[pool_name].bootstrap_host_address.split('/')[0] }}"
+    xoa_pool_matches: []
+    xoa_pool_aliases: >-
+      {{ [pool_name, hostvars[pool_name].bootstrap_host_address.split('/')[0],
+          hostvars[pool_name].ansible_host | default(pool_name),
+          (hostvars[pool_name].site_vpn | default({})).get('endpoint', '')]
+         | reject('equalto', '') | unique | list }}
+
+- name: Collect matching registrations
+  ansible.builtin.set_fact:
+    xoa_pool_matches: "{{ xoa_pool_matches + [item] }}"
+  loop: "{{ xoa_registered_servers.json }}"
+  loop_control:
+    label: "{{ item.id }}"
+  when: item.host in xoa_pool_aliases or item.label | default('') == pool_name
+
+- name: Refuse ambiguous or differently addressed registrations
+  ansible.builtin.assert:
+    that:
+      - xoa_pool_matches | length <= 1
+      - xoa_pool_matches | length == 0 or xoa_pool_matches[0].host == xoa_pool_host
+    fail_msg: >-
+      {{ pool_name }} already has an ambiguous registration or uses another endpoint.
+      Review its connection in XOA and switch it to the inventory private address before retrying.
+      Existing connections are never replaced or deleted automatically.
+
+- name: Check the certificate policy of an existing registration
+  ansible.builtin.assert:
+    that:
+      - (xoa_pool_matches[0].allowUnauthorized | default(false) | bool) == (not (hostvars[pool_name].xoa_pool_validate_certs | default(true) | bool))
+    fail_msg: >-
+      {{ pool_name }} already exists with a different host certificate policy.
+      REST cannot update this setting on an existing registration.
+      In XOA Settings > Servers, set certificate verification to
+      {{ 'enabled' if hostvars[pool_name].xoa_pool_validate_certs | default(true) | bool else 'disabled (accept the self-signed certificate)' }}
+      for {{ xoa_pool_host }}, then retry. The existing registration is preserved.
+  when: xoa_pool_matches | length == 1
+
+- name: Require host credentials only for a missing registration
+  ansible.builtin.assert:
+    that:
+      - hostvars[pool_name].xoa_pool_password | default('') | length > 0
+  when: xoa_pool_matches | length == 0
+  no_log: true
+
+- name: Add the pool to the registration plan
+  ansible.builtin.set_fact:
+    xoa_pool_plan: >-
+      {{ xoa_pool_plan + [{'name': pool_name, 'host': xoa_pool_host,
+          'id': (xoa_pool_matches[0].id if xoa_pool_matches | length else ''),
+          'status': (xoa_pool_matches[0].status | default('') if xoa_pool_matches | length else '')}] }}
