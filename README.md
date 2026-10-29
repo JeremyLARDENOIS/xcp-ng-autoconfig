@@ -1,4 +1,4 @@
-# XCP-ng automation
+# XCP-ng autoconfig
 
 Automation for independent XCP-ng hosts. The initial goal is to create an
 internal network, deploy a router VM, and deploy an XOA appliance.
