@@ -45,6 +45,11 @@ table inet xcpng_router {
         iifname "wg-sites" oifname "eth0" ip saddr {{ vpn_sites_remote_xoa }} ip daddr {{ bootstrap_host_address.split('/')[0] }} tcp dport 443 counter accept
         iifname "eth0" oifname "wg-sites" ip saddr {{ bootstrap_host_address.split('/')[0] }} ip daddr {{ vpn_sites_remote_xoa }} ct state established,related counter accept
 {% endif %}
+        # Allow TCP and UDP in either direction between the paired private LANs.
+        iifname "eth0" oifname "wg-sites" ip saddr {{ subnet }} ip daddr {{ vpn_sites_remote_lan }} ip protocol tcp counter accept
+        iifname "wg-sites" oifname "eth0" ip saddr {{ vpn_sites_remote_lan }} ip daddr {{ subnet }} ip protocol tcp counter accept
+        iifname "eth0" oifname "wg-sites" ip saddr {{ subnet }} ip daddr {{ vpn_sites_remote_lan }} ip protocol udp counter accept
+        iifname "wg-sites" oifname "eth0" ip saddr {{ vpn_sites_remote_lan }} ip daddr {{ subnet }} ip protocol udp counter accept
         iifname "eth0" oifname "wg-sites" ip saddr {{ subnet }} ip daddr {{ vpn_sites_remote_lan }} ip protocol icmp counter accept
         iifname "wg-sites" oifname "eth0" ip saddr {{ vpn_sites_remote_lan }} ip daddr {{ subnet }} ip protocol icmp counter accept
         # Unknown tunnel traffic must not reach the generic established rule.

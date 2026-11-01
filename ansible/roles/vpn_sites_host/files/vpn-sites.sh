@@ -70,9 +70,11 @@ if [ -n "$remote_admin" ]; then
 -A XCPNG-SITES-OUT -d $remote_admin -o $uplink -j DROP"
 fi
 reconcile_chain filter XCPNG-SITES-OUT "$output_rules"
-input_rules=''
+input_rules="-A XCPNG-SITES-IN -s $remote_lan -d $host_address/32 -i private-net -p tcp -j ACCEPT
+-A XCPNG-SITES-IN -s $remote_lan -d $host_address/32 -i private-net -p udp -j ACCEPT"
 if [ -n "$remote_admin" ]; then
-    input_rules="-A XCPNG-SITES-IN -s $remote_admin -d $host_address/32 -i private-net -p tcp -m multiport --dports 22,443 -j ACCEPT
+    input_rules="$input_rules
+-A XCPNG-SITES-IN -s $remote_admin -d $host_address/32 -i private-net -p tcp -m multiport --dports 22,443 -j ACCEPT
 -A XCPNG-SITES-IN -s $remote_admin -d $host_address/32 -i private-net -p icmp -j ACCEPT"
 fi
 if [ -n "$remote_xoa" ]; then

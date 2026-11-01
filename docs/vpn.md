@@ -116,10 +116,11 @@ its normal Internet route and DNS stay unchanged. Pass
 `vpn_configure_workstation=false` to update infrastructure only.
 
 The transport routes the two LANs without merging pools or moving VM interfaces.
-Permissions are deliberately narrower than general application connectivity:
-the existing administrator can reach the remote LAN, XOA can reach the remote
-host's private HTTPS API, and private ICMP diagnostics are allowed. Other new
-intersite flows are refused. Routes and WireGuard AllowedIPs include the remote
+TCP and UDP traffic on all ports is allowed in both directions between the paired
+private LANs, including the hosts' private addresses. The existing administrator
+can reach the remote LAN, and private ICMP diagnostics are allowed. Other new
+intersite flows are refused. Destination services must be listening and their own
+firewalls must allow the traffic. Routes and WireGuard AllowedIPs include the remote
 administrator's /32 where needed so replies return through the entry site.
 LAN and administrator addresses are not translated between sites.
 
